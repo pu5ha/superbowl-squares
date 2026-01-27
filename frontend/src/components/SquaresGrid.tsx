@@ -110,7 +110,7 @@ export function SquaresGrid({
 
         <div className="relative">
           {/* Team B label (top) - Column headers */}
-          <div className="flex items-end mb-3 ml-[72px]">
+          <div className="flex items-end mb-3 ml-[76px]">
             <div className="flex-1 text-center">
               <div className="flex items-center justify-center gap-2">
                 {showTeamLogos && (isPatriotsRow ? <SeahawksLogo size={28} /> : <PatriotsLogo size={28} />)}
@@ -137,15 +137,11 @@ export function SquaresGrid({
 
           <div className="flex">
             {/* Team A label (left, rotated) - Row headers */}
-            <div className="flex flex-col items-center justify-center w-12 mr-3">
-              <div className="flex flex-col items-center justify-center h-full">
-                {showTeamLogos && (
-                  <div className="mb-3">
-                    {isPatriotsRow ? <PatriotsLogo size={20} /> : <SeahawksLogo size={20} />}
-                  </div>
-                )}
+            <div className="flex items-center justify-center w-10 mr-2">
+              <div className="flex items-center gap-2 -rotate-90 whitespace-nowrap">
+                {showTeamLogos && (isPatriotsRow ? <PatriotsLogo size={20} /> : <SeahawksLogo size={20} />)}
                 <span
-                  className="text-xs font-bold tracking-wider -rotate-90 whitespace-nowrap origin-center"
+                  className="text-xs font-bold tracking-wider"
                   style={{
                     fontFamily: 'var(--font-display)',
                     color: showTeamLogos ? (isPatriotsRow ? '#c60c30' : '#69be28') : 'var(--championship-gold)'
@@ -179,11 +175,11 @@ export function SquaresGrid({
               {/* Main grid with row numbers */}
               <div className="flex gap-1">
                 {/* Row numbers column */}
-                <div className="flex flex-col gap-1">
+                <div className="grid grid-rows-[repeat(10,1fr)] gap-1 w-7">
                   {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => (
                     <div
                       key={`row-${i}`}
-                      className="flex items-center justify-center w-7 aspect-square rounded-md bg-[var(--steel)]/20"
+                      className="flex items-center justify-center rounded-md bg-[var(--steel)]/20"
                     >
                       <span className="grid-number text-xs font-bold">
                         {numbersAssigned ? rowNumbers![i] : '?'}
@@ -193,7 +189,7 @@ export function SquaresGrid({
                 </div>
 
                 {/* Grid squares */}
-                <div className="flex-1 grid grid-cols-10 gap-1">
+                <div className="flex-1 grid grid-cols-10 gap-1 aspect-square">
                   {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((row) =>
                     [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((col) => {
                       const position = row * 10 + col;

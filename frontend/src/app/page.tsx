@@ -127,12 +127,69 @@ export default function HomePage() {
         </div>
       </section>
 
+      {/* What is Super Bowl Squares */}
+      <section className="py-20 relative">
+        <div className="container mx-auto px-6">
+          <div className="max-w-4xl mx-auto">
+            <div className="text-center mb-12">
+              <h2 className="text-3xl md:text-4xl font-bold text-[var(--chrome)] mb-4" style={{ fontFamily: 'var(--font-display)' }}>
+                WHAT IS SUPER BOWL SQUARES?
+              </h2>
+              <p className="text-[var(--smoke)] text-lg">
+                The most popular Super Bowl party game, now onchain
+              </p>
+            </div>
+
+            <div className="card p-8 md:p-10">
+              <div className="space-y-6 text-[var(--smoke)]">
+                <div className="flex gap-4">
+                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-[var(--turf-green)]/20 flex items-center justify-center">
+                    <span className="text-[var(--turf-green)] font-bold text-sm">1</span>
+                  </div>
+                  <div>
+                    <h3 className="text-[var(--chrome)] font-bold mb-1">Buy Squares on a 10x10 Grid</h3>
+                    <p>The grid has 100 squares. One team runs along the top, the other down the side. Each square represents a unique combination of score digits for both teams.</p>
+                  </div>
+                </div>
+
+                <div className="flex gap-4">
+                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-[var(--turf-green)]/20 flex items-center justify-center">
+                    <span className="text-[var(--turf-green)] font-bold text-sm">2</span>
+                  </div>
+                  <div>
+                    <h3 className="text-[var(--chrome)] font-bold mb-1">Numbers Are Randomly Assigned</h3>
+                    <p>After all squares are sold, random numbers 0-9 are assigned to each team's axis using Chainlink VRF. This keeps it fair - no one knows which numbers they'll get when buying.</p>
+                  </div>
+                </div>
+
+                <div className="flex gap-4">
+                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-[var(--turf-green)]/20 flex items-center justify-center">
+                    <span className="text-[var(--turf-green)] font-bold text-sm">3</span>
+                  </div>
+                  <div>
+                    <h3 className="text-[var(--chrome)] font-bold mb-1">Win by Matching the Last Digit of Each Score</h3>
+                    <p>At the end of each quarter, take the last digit of each team's score. The square where those two numbers meet wins!</p>
+                  </div>
+                </div>
+
+                <div className="mt-8 p-4 rounded-xl bg-[var(--turf-green)]/10 border border-[var(--turf-green)]/20">
+                  <p className="text-sm">
+                    <span className="text-[var(--turf-green)] font-bold">Example:</span>{' '}
+                    <span className="text-[var(--chrome)]">Score is Patriots <span className="text-[var(--turf-green)] font-bold">17</span> - Seahawks <span className="text-[var(--turf-green)] font-bold">14</span>. Take the last digit of each: Patriots = <span className="text-[var(--turf-green)] font-bold">7</span>, Seahawks = <span className="text-[var(--turf-green)] font-bold">4</span>. The square where 7 (Patriots side) meets 4 (Seahawks side) wins!</span>
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* Features Section */}
       <section className="py-24 relative">
         <div className="container mx-auto px-6">
           <div className="text-center mb-16">
             <h2 className="text-3xl md:text-4xl font-bold text-[var(--chrome)] mb-4" style={{ fontFamily: 'var(--font-display)' }}>
-              WHY CHOOSE ON-CHAIN?
+              WHY CHOOSE ONCHAIN?
             </h2>
             <p className="text-[var(--smoke)] max-w-2xl mx-auto">
               Traditional squares pools rely on trust. We built something better.
@@ -148,8 +205,8 @@ export default function HomePage() {
             />
             <FeatureCard
               icon={<OracleIcon />}
-              title="Oracle Scores"
-              description="UMA Optimistic Oracle provides decentralized and dispute-resistant score verification. Anyone can submit, everyone can verify."
+              title="Transparent Scoring"
+              description="Pool operators submit verified scores on-chain. All transactions are publicly auditable and immutably recorded on Ethereum."
               delay={200}
             />
             <FeatureCard
@@ -196,7 +253,7 @@ export default function HomePage() {
             <Step
               number={3}
               title="Watch & Score"
-              description="During the game, anyone can submit scores via UMA Oracle with a small bond."
+              description="During the game, the pool operator submits scores on-chain after each quarter ends."
               delay={300}
             />
             <Step
@@ -386,44 +443,68 @@ function MiniGrid() {
 
         <div className="flex">
           {/* Patriots label (left - rows) */}
-          <div className="flex flex-col items-center justify-center w-12">
-            <PatriotsLogo size={24} />
-            <span
-              className="text-xs font-bold -rotate-90 whitespace-nowrap mt-4"
-              style={{ fontFamily: 'var(--font-display)', color: '#c60c30' }}
-            >
-              PATRIOTS
-            </span>
+          <div className="flex items-center justify-center w-8">
+            <div className="flex items-center gap-1 -rotate-90 whitespace-nowrap">
+              <PatriotsLogo size={16} />
+              <span
+                className="text-[10px] font-bold"
+                style={{ fontFamily: 'var(--font-display)', color: '#c60c30' }}
+              >
+                PATRIOTS
+              </span>
+            </div>
           </div>
 
-          {/* Grid */}
-          <div className="flex-1 grid grid-cols-10 gap-1">
-            {Array.from({ length: 100 }).map((_, i) => {
-              const isHighlighted = i === 34 || i === 56 || i === 78;
-              const isHovered = i === hoveredSquare;
+          <div className="flex-1">
+            {/* Column numbers */}
+            <div className="flex gap-1 mb-1 ml-6">
+              {[1, 7, 4, 0, 9, 2, 5, 8, 3, 6].map((num, i) => (
+                <div key={i} className="flex-1 flex items-center justify-center h-5 rounded-sm bg-[var(--steel)]/20">
+                  <span className="text-[10px] font-bold text-[var(--turf-green)]">{num}</span>
+                </div>
+              ))}
+            </div>
 
-              return (
-                <div
-                  key={i}
-                  className={`aspect-square rounded-sm transition-all duration-200 cursor-pointer ${
-                    isHighlighted
-                      ? 'bg-[var(--turf-green)] shadow-[0_0_10px_rgba(34,197,94,0.5)]'
-                      : isHovered
-                      ? 'bg-[var(--turf-green)]/50'
-                      : 'bg-[var(--grass-dark)]/30 hover:bg-[var(--grass-dark)]/50'
-                  }`}
-                  onMouseEnter={() => setHoveredSquare(i)}
-                  onMouseLeave={() => setHoveredSquare(null)}
-                />
-              );
-            })}
+            <div className="flex gap-1">
+              {/* Row numbers */}
+              <div className="flex flex-col gap-1 w-5">
+                {[3, 8, 1, 6, 0, 9, 4, 7, 2, 5].map((num, i) => (
+                  <div key={i} className="flex-1 flex items-center justify-center rounded-sm bg-[var(--steel)]/20">
+                    <span className="text-[10px] font-bold text-[var(--turf-green)]">{num}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Grid */}
+              <div className="flex-1 grid grid-cols-10 gap-1">
+                {Array.from({ length: 100 }).map((_, i) => {
+                  const isHighlighted = i === 34 || i === 56 || i === 78;
+                  const isHovered = i === hoveredSquare;
+
+                  return (
+                    <div
+                      key={i}
+                      className={`aspect-square rounded-sm transition-all duration-200 cursor-pointer border ${
+                        isHighlighted
+                          ? 'bg-[var(--turf-green)] shadow-[0_0_10px_rgba(34,197,94,0.5)] border-[var(--turf-green)]'
+                          : isHovered
+                          ? 'bg-[var(--turf-green)]/30 border-[var(--turf-green)]/50'
+                          : 'bg-[var(--grass-dark)]/20 border-[var(--turf-green)]/30 hover:bg-[var(--grass-dark)]/40'
+                      }`}
+                      onMouseEnter={() => setHoveredSquare(i)}
+                      onMouseLeave={() => setHoveredSquare(null)}
+                    />
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </div>
 
         {/* Legend */}
         <div className="flex justify-center gap-6 mt-4 text-xs">
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-sm bg-[var(--grass-dark)]/30" />
+            <div className="w-3 h-3 rounded-sm bg-[var(--grass-dark)]/20 border border-[var(--turf-green)]/30" />
             <span className="text-[var(--smoke)]">Available</span>
           </div>
           <div className="flex items-center gap-2">

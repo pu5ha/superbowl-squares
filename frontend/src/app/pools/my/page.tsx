@@ -46,7 +46,9 @@ export default function MyPoolsPage() {
             <p className="text-[var(--smoke)] mb-6">
               Connect your wallet to view pools you've created or joined.
             </p>
-            <ConnectButton />
+            <div className="flex justify-center">
+              <ConnectButton />
+            </div>
           </div>
         </div>
       </div>
