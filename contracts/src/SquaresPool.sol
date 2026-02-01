@@ -510,6 +510,30 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
         _withdrawYieldToAdmin();
     }
 
+    /// @notice Emergency function to recover stuck ERC20 tokens (admin only)
+    /// @dev Used to recover aTokens when wrong aToken address was configured
+    /// @param token The ERC20 token to recover
+    /// @param amount Amount to recover (use type(uint256).max for full balance)
+    function emergencyRecoverToken(address token, uint256 amount) external {
+        require(msg.sender == ISquaresFactory(factory).admin(), "Only admin");
+        require(state == PoolState.FINAL_SCORED, "Game not finished");
+
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        uint256 toRecover = amount == type(uint256).max ? balance : amount;
+        require(toRecover <= balance, "Insufficient balance");
+
+        address admin = ISquaresFactory(factory).admin();
+        bool success = IERC20(token).transfer(admin, toRecover);
+        require(success, "Transfer failed");
+    }
+
+    /// @notice Update aToken address (admin only)
+    /// @dev Used to fix misconfigured aToken addresses
+    function setAToken(address _aToken) external {
+        require(msg.sender == ISquaresFactory(factory).admin(), "Only admin");
+        aToken = _aToken;
+    }
+
     /// @notice Internal yield withdrawal implementation
     function _withdrawYieldToAdmin() internal {
         address admin = ISquaresFactory(factory).admin();

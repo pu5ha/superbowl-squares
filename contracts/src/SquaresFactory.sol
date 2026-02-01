@@ -204,6 +204,21 @@ contract SquaresFactory {
         emit YieldWithdrawnFromAllPools(withdrawn);
     }
 
+    /// @notice Update Aave configuration for an existing pool
+    /// @dev Useful for fixing misconfigured pools or updating to new Aave addresses
+    /// @param pool Address of the pool to update
+    /// @param _aavePool Aave Pool contract address
+    /// @param _wethGateway WETH Gateway contract address
+    /// @param _aToken aToken address (aWETH for ETH pools, aUSDC for USDC pools)
+    function updatePoolAaveConfig(
+        address pool,
+        address _aavePool,
+        address _wethGateway,
+        address _aToken
+    ) external onlyAdmin {
+        SquaresPool(payable(pool)).setAaveConfig(_aavePool, _wethGateway, _aToken);
+    }
+
     // ============ Score Admin Functions ============
 
     /// @notice Submit score to all pools that are ready for this quarter

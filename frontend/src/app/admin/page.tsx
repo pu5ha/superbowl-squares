@@ -70,7 +70,16 @@ export default function AdminPage() {
   const [teamAScore, setTeamAScore] = useState<string>('');
   const [teamBScore, setTeamBScore] = useState<string>('');
 
-  const { pools, total, isLoading: isLoadingPools, refetch } = useAllPools(0, 100);
+  const { pools, total, isLoading: isLoadingPools, refetch: refetchPools } = useAllPools(0, 100);
+  const [poolsNeedingVRF, setPoolsNeedingVRF] = useState<number>(0);
+  const [poolsReportedVRF, setPoolsReportedVRF] = useState<Set<string>>(new Set());
+
+  // Wrapper refetch that resets VRF tracking
+  const refetch = () => {
+    setPoolsNeedingVRF(0);
+    setPoolsReportedVRF(new Set());
+    refetchPools();
+  };
   const {
     submitScoreToAllPools,
     isPending,
@@ -341,11 +350,19 @@ export default function AdminPage() {
           <div className="flex items-center gap-4">
             <button
               onClick={triggerVRF}
-              disabled={isVRFPending || isVRFConfirming}
-              className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={isVRFPending || isVRFConfirming || poolsNeedingVRF === 0}
+              className={`btn-primary disabled:opacity-50 disabled:cursor-not-allowed ${
+                poolsNeedingVRF === 0 ? '!bg-[var(--steel)]/30 !text-[var(--smoke)]' : ''
+              }`}
             >
-              {isVRFPending ? 'Confirm in Wallet...' : isVRFConfirming ? 'Triggering VRF...' : 'Trigger VRF for All Pools'}
+              {isVRFPending ? 'Confirm in Wallet...' : isVRFConfirming ? 'Triggering VRF...' : poolsNeedingVRF === 0 ? 'VRF Already Triggered' : 'Trigger VRF for All Pools'}
             </button>
+
+            {poolsNeedingVRF > 0 && !isVRFPending && !isVRFConfirming && (
+              <span className="text-sm text-[var(--smoke)]">
+                {poolsNeedingVRF} pool{poolsNeedingVRF > 1 ? 's' : ''} in OPEN state
+              </span>
+            )}
 
             {isVRFSuccess && (
               <span className="text-[var(--turf-green)]">VRF triggered successfully!</span>
@@ -560,7 +577,15 @@ export default function AdminPage() {
           ) : pools && pools.length > 0 ? (
             <div className="space-y-3">
               {pools.map((poolAddress) => (
-                <PoolRow key={poolAddress} address={poolAddress} />
+                <PoolRow key={poolAddress} address={poolAddress} onOpenStateChange={(isOpen) => {
+                  // Only count if not already reported for this pool
+                  if (!poolsReportedVRF.has(poolAddress)) {
+                    setPoolsReportedVRF(prev => new Set(prev).add(poolAddress));
+                    if (isOpen) {
+                      setPoolsNeedingVRF(prev => prev + 1);
+                    }
+                  }
+                }} />
               ))}
             </div>
           ) : (
@@ -575,13 +600,23 @@ export default function AdminPage() {
   );
 }
 
-function PoolRow({ address }: { address: `0x${string}` }) {
+function PoolRow({ address, onOpenStateChange }: { address: `0x${string}`; onOpenStateChange?: (isOpen: boolean) => void }) {
   const chainId = useChainId();
   const { data: poolInfo, isLoading } = useReadContract({
     address,
     abi: SquaresPoolABI,
     functionName: 'getPoolInfo',
   });
+
+  const state = poolInfo ? (poolInfo as [string, number, bigint, `0x${string}`, bigint, bigint, string, string])[1] : null;
+  const isOpen = state === PoolState.OPEN;
+
+  // Report open state to parent once when loaded
+  useEffect(() => {
+    if (state !== null && onOpenStateChange) {
+      onOpenStateChange(isOpen);
+    }
+  }, [state, isOpen, onOpenStateChange]);
 
   if (isLoading) {
     return (
@@ -595,8 +630,8 @@ function PoolRow({ address }: { address: `0x${string}` }) {
     return null;
   }
 
-  const [name, state, , paymentToken, totalPot, squaresSold] = poolInfo as [string, number, bigint, `0x${string}`, bigint, bigint, string, string];
-  const nextQuarter = getNextQuarter(state);
+  const [name, poolState, , paymentToken, totalPot, squaresSold] = poolInfo as [string, number, bigint, `0x${string}`, bigint, bigint, string, string];
+  const nextQuarter = getNextQuarter(poolState);
 
   // Get token info for correct formatting
   const token = findToken(chainId, paymentToken) || ETH_TOKEN;
@@ -613,13 +648,13 @@ function PoolRow({ address }: { address: `0x${string}` }) {
         </div>
         <div className="text-right">
           <div className={`text-sm font-medium ${
-            state >= PoolState.NUMBERS_ASSIGNED && state < PoolState.FINAL_SCORED
+            poolState >= PoolState.NUMBERS_ASSIGNED && poolState < PoolState.FINAL_SCORED
               ? 'text-[var(--turf-green)]'
-              : state === PoolState.FINAL_SCORED
+              : poolState === PoolState.FINAL_SCORED
               ? 'text-[var(--championship-gold)]'
               : 'text-[var(--smoke)]'
           }`}>
-            {stateToString(state)}
+            {stateToString(poolState)}
             {nextQuarter !== null && (
               <span className="ml-2 text-xs">({QUARTER_NAMES[nextQuarter]})</span>
             )}
@@ -747,6 +782,7 @@ function PoolYieldRow({ poolAddress, onRefresh, onAaveDetected, onYieldDetected,
   const { yieldInfo, isLoading: isLoadingYield } = usePoolYieldInfo(poolAddress);
   const { isFinished } = usePoolState(poolAddress);
   const { withdrawYield, isPending, isConfirming, isSuccess, error, reset } = useWithdrawYield(poolAddress);
+  const [hasWithdrawn, setHasWithdrawn] = useState(false);
 
   const { data: poolInfo } = useReadContract({
     address: poolAddress,
@@ -771,6 +807,7 @@ function PoolYieldRow({ poolAddress, onRefresh, onAaveDetected, onYieldDetected,
   // Handle withdraw success
   useEffect(() => {
     if (isSuccess) {
+      setHasWithdrawn(true);
       setTimeout(() => {
         onYieldWithdrawn?.();
         onRefresh();
@@ -840,14 +877,14 @@ function PoolYieldRow({ poolAddress, onRefresh, onAaveDetected, onYieldDetected,
           {isFinished && (
             <button
               onClick={() => withdrawYield()}
-              disabled={isPending || isConfirming || !hasYield}
+              disabled={isPending || isConfirming || !hasYield || hasWithdrawn}
               className={`px-4 py-2 rounded-lg font-bold text-xs transition-all ${
-                isPending || isConfirming || !hasYield
+                isPending || isConfirming || !hasYield || hasWithdrawn
                   ? 'bg-[var(--steel)]/30 text-[var(--smoke)] cursor-not-allowed'
                   : 'bg-[var(--championship-gold)]/20 text-[var(--championship-gold)] border border-[var(--championship-gold)]/30 hover:bg-[var(--championship-gold)]/30'
               }`}
             >
-              {isPending ? 'Confirm...' : isConfirming ? 'Withdrawing...' : hasYield ? 'Withdraw' : 'No Yield'}
+              {isPending ? 'Confirm...' : isConfirming ? 'Withdrawing...' : hasWithdrawn ? 'Withdrawn' : hasYield ? 'Withdraw' : 'No Yield'}
             </button>
           )}
         </div>

@@ -19,7 +19,8 @@ contract DeployArbitrum is Script {
     address constant AAVE_POOL = 0x794a61358D6845594F94dc1DB02A252b5b4814aD;
     address constant WETH_GATEWAY = 0xB5Ee21786D28c5Ba61661550879475976B707099;
     address constant A_WETH = 0xe50fA9b3c56FfB159cB0FCA61F5c9D750e8128c8;
-    address constant A_USDC = 0x625E7708f30cA75bfd92586e17077590C60eb4cD;
+    // Native USDC aToken (NOT bridged USDC.e)
+    address constant A_USDC = 0x724dc807b04555b71ed48a6896b6F41593b8C637;
 
     function run() external {
         require(block.chainid == 42161, "This script is for Arbitrum One only");
