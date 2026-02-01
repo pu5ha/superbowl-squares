@@ -175,7 +175,7 @@ export function useUserSquareCount(
   poolAddress: `0x${string}` | undefined,
   userAddress: `0x${string}` | undefined
 ) {
-  const { data, isLoading, error } = useReadContract({
+  const { data, isLoading, error, refetch } = useReadContract({
     address: poolAddress,
     abi: SquaresPoolABI,
     functionName: 'userSquareCount',
@@ -185,7 +185,7 @@ export function useUserSquareCount(
     },
   });
 
-  return { squareCount: data as number | undefined, isLoading, error };
+  return { squareCount: data as number | undefined, isLoading, error, refetch };
 }
 
 export function useMaxSquaresPerUser(poolAddress: `0x${string}` | undefined) {

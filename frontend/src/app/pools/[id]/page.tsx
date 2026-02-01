@@ -50,7 +50,7 @@ export default function PoolPage() {
   const { grid, isLoading: gridLoading, refetch: refetchGrid } = usePoolGrid(poolAddress);
   const { rowNumbers, colNumbers, refetch: refetchNumbers } = usePoolNumbers(poolAddress);
   const { purchaseDeadline, vrfTriggerTime } = usePoolDeadlines(poolAddress);
-  const { squareCount } = useUserSquareCount(poolAddress, address);
+  const { squareCount, refetch: refetchSquareCount } = useUserSquareCount(poolAddress, address);
   const { maxSquares } = useMaxSquaresPerUser(poolAddress);
   const { percentages } = usePayoutPercentages(poolAddress);
   const { operator } = usePoolOperator(poolAddress);
@@ -226,8 +226,10 @@ export default function PoolPage() {
     if (purchaseSuccess) {
       setShowPurchaseSuccess(true);
       setSelectedSquares([]); // Clear selected squares after successful purchase
+      // Refetch all relevant data
       refetchGrid();
       refetchInfo();
+      refetchSquareCount();
       // Auto-hide after 5 seconds
       const timer = setTimeout(() => {
         setShowPurchaseSuccess(false);
@@ -235,7 +237,7 @@ export default function PoolPage() {
       }, 5000);
       return () => clearTimeout(timer);
     }
-  }, [purchaseSuccess, refetchGrid, refetchInfo, resetPurchase]);
+  }, [purchaseSuccess, refetchGrid, refetchInfo, refetchSquareCount, resetPurchase]);
 
   // After approval succeeds, continue with purchase
   // Only trigger when step is 'approving' to prevent stale state from auto-triggering

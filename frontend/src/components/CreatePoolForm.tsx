@@ -15,8 +15,8 @@ import { Token, ETH_TOKEN, isNativeToken, parseTokenAmount, getTokensForChain } 
 // Super Bowl LX: February 8, 2026 at 6:30 PM EST
 const SUPER_BOWL_DATE = new Date('2026-02-08T18:30:00-05:00');
 const SUPER_BOWL_TIMESTAMP = Math.floor(SUPER_BOWL_DATE.getTime() / 1000);
-// Purchase deadline & VRF trigger time 2 days before game
-const PURCHASE_DEADLINE_TIMESTAMP = SUPER_BOWL_TIMESTAMP - (2 * 24 * 60 * 60);
+// Purchase deadline & VRF trigger time 1 day before game
+const PURCHASE_DEADLINE_TIMESTAMP = SUPER_BOWL_TIMESTAMP - (1 * 24 * 60 * 60);
 const VRF_TRIGGER_TIMESTAMP = PURCHASE_DEADLINE_TIMESTAMP;
 
 // Fixed teams for Super Bowl LX
@@ -45,6 +45,19 @@ export function CreatePoolForm() {
   const { createPool, isPending, isConfirming, isSuccess, isReceiptError, error, poolAddress, hash, refetchReceipt, isFactoryConfigured } = useCreatePool();
   const { totalCost, vrfFundingAmount, isLoading: isLoadingCost } = usePoolCreationCost();
   const { isPaused: poolCreationPaused, isLoading: isPauseLoading } = usePoolCreationPaused();
+
+  // Check if pool creation deadline has passed
+  const [isDeadlinePassed, setIsDeadlinePassed] = useState(false);
+  useEffect(() => {
+    const checkDeadline = () => {
+      const now = Math.floor(Date.now() / 1000);
+      setIsDeadlinePassed(now >= PURCHASE_DEADLINE_TIMESTAMP);
+    };
+    checkDeadline();
+    // Check every minute
+    const interval = setInterval(checkDeadline, 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   const [selectedChainId, setSelectedChainId] = useState<number | null>(null);
   const [selectedToken, setSelectedToken] = useState<Token>(ETH_TOKEN);
@@ -208,8 +221,29 @@ export function CreatePoolForm() {
 
   return (
     <form onSubmit={handleSubmit} onKeyDown={handleKeyDown} noValidate className="space-y-6">
+      {/* Pool Creation Deadline Passed Banner */}
+      {isDeadlinePassed && (
+        <div className="p-4 rounded-xl bg-[var(--championship-gold)]/10 border border-[var(--championship-gold)]/30">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-lg bg-[var(--championship-gold)]/20 flex items-center justify-center shrink-0">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="text-[var(--championship-gold)]">
+                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
+                <path d="M12 6v6l4 2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            </div>
+            <div>
+              <p className="font-bold text-[var(--championship-gold)]">Pool Creation Has Ended</p>
+              <p className="text-sm text-[var(--smoke)] mt-1">
+                The deadline for creating new Super Bowl LX pools was February 7, 2026 at 6:30 PM EST.
+                No new pools can be created for this game.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Pool Creation Paused Banner */}
-      {poolCreationPaused && (
+      {poolCreationPaused && !isDeadlinePassed && (
         <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/30">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 rounded-lg bg-red-500/20 flex items-center justify-center shrink-0">
@@ -499,7 +533,7 @@ export function CreatePoolForm() {
                 PURCHASE DEADLINE
               </span>
             </div>
-            <p className="text-[var(--chrome)] font-bold">February 6, 2026 at 6:30 PM EST</p>
+            <p className="text-[var(--chrome)] font-bold">February 7, 2026 at 6:30 PM EST</p>
             <p className="text-xs text-[var(--smoke)] mt-1 opacity-70">
               Squares close 2 days before kickoff. Random numbers assigned automatically via Chainlink VRF.
             </p>
@@ -856,7 +890,7 @@ export function CreatePoolForm() {
           <div className="p-4 rounded-xl bg-[var(--steel)]/10 border border-[var(--steel)]/20">
             <div className="flex justify-between items-center mb-2">
               <span className="text-[var(--smoke)]">Purchase Deadline</span>
-              <span className="font-bold text-[var(--chrome)]">Feb 6, 2026 @ 6:30 PM EST</span>
+              <span className="font-bold text-[var(--chrome)]">Feb 7, 2026 @ 6:30 PM EST</span>
             </div>
             <div className="flex justify-between items-center">
               <span className="text-[var(--smoke)]">Numbers Assigned</span>
@@ -1018,7 +1052,7 @@ export function CreatePoolForm() {
         ) : (
           <button
             type="submit"
-            disabled={!address || isPending || isConfirming || isSwitching || payoutSum !== 100 || !canSubmit || !isFactoryConfigured || isLoadingCost || !!poolCreationPaused}
+            disabled={!address || isPending || isConfirming || isSwitching || payoutSum !== 100 || !canSubmit || !isFactoryConfigured || isLoadingCost || !!poolCreationPaused || isDeadlinePassed}
             className="btn-primary px-10 py-4 text-lg"
           >
             {isPending ? (
