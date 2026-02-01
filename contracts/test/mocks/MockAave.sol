@@ -68,6 +68,13 @@ contract MockAToken is IAToken {
     function setYieldMultiplier(uint256 _multiplier) external {
         yieldMultiplier = _multiplier;
     }
+
+    /// @notice Simulate Aave rounding loss by reducing balance
+    /// @dev Used to test the fix for withdrawal when balance < expected amount
+    function simulateRoundingLoss(address account, uint256 lossAmount) external {
+        require(_balances[account] >= lossAmount, "Loss exceeds balance");
+        _balances[account] -= lossAmount;
+    }
 }
 
 /// @title MockAavePool

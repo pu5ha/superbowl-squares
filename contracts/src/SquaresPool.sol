@@ -385,20 +385,26 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
             payoutClaimed[winner][quarter] = true;
             unclaimedRolledAmount = 0;
 
-            // Withdraw from Aave if configured
+            // Determine actual payout amount
+            uint256 actualPayout = effectivePayout;
+
+            // Withdraw from Aave if configured (may return less due to rounding)
             if (address(aavePool) != address(0)) {
-                _withdrawFromAave(effectivePayout);
+                actualPayout = _withdrawFromAave(effectivePayout);
             }
 
-            if (paymentToken == address(0)) {
-                (bool success,) = winner.call{value: effectivePayout}("");
-                if (!success) revert TransferFailed();
-            } else {
-                bool success = IERC20(paymentToken).transfer(winner, effectivePayout);
-                if (!success) revert TransferFailed();
+            // Only transfer if we have funds
+            if (actualPayout > 0) {
+                if (paymentToken == address(0)) {
+                    (bool success,) = winner.call{value: actualPayout}("");
+                    if (!success) revert TransferFailed();
+                } else {
+                    bool success = IERC20(paymentToken).transfer(winner, actualPayout);
+                    if (!success) revert TransferFailed();
+                }
             }
 
-            emit PayoutClaimed(winner, quarter, effectivePayout);
+            emit PayoutClaimed(winner, quarter, actualPayout);
         } else if (payout > 0) {
             // No winner - roll this quarter's payout forward
             unclaimedRolledAmount += payout;
@@ -412,31 +418,34 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
             finalDistributionCalculated = true;
             unclaimedRolledAmount = 0;
 
-            // Withdraw from Aave if configured
+            // Withdraw from Aave if configured (may return less due to rounding)
+            uint256 actualDistribute = totalToDistribute;
             if (address(aavePool) != address(0)) {
-                _withdrawFromAave(totalToDistribute);
+                actualDistribute = _withdrawFromAave(totalToDistribute);
             }
 
-            emit FinalDistributionCalculated(totalToDistribute, squaresSold);
+            emit FinalDistributionCalculated(actualDistribute, squaresSold);
 
-            // Auto-distribute to all square owners
-            for (uint256 i = 0; i < 100; i++) {
-                address owner = grid[i];
-                if (owner != address(0) && !finalDistributionClaimed[owner]) {
-                    finalDistributionClaimed[owner] = true;
+            // Auto-distribute to all square owners (use actual withdrawn amount)
+            if (actualDistribute > 0) {
+                for (uint256 i = 0; i < 100; i++) {
+                    address owner = grid[i];
+                    if (owner != address(0) && !finalDistributionClaimed[owner]) {
+                        finalDistributionClaimed[owner] = true;
 
-                    uint256 ownerSquares = userSquareCount[owner];
-                    uint256 ownerShare = (totalToDistribute * ownerSquares) / squaresSold;
+                        uint256 ownerSquares = userSquareCount[owner];
+                        uint256 ownerShare = (actualDistribute * ownerSquares) / squaresSold;
 
-                    if (paymentToken == address(0)) {
-                        (bool success,) = owner.call{value: ownerShare}("");
-                        if (success) {
-                            emit FinalDistributionClaimed(owner, ownerShare, ownerSquares);
-                        }
-                    } else {
-                        bool success = IERC20(paymentToken).transfer(owner, ownerShare);
-                        if (success) {
-                            emit FinalDistributionClaimed(owner, ownerShare, ownerSquares);
+                        if (paymentToken == address(0)) {
+                            (bool success,) = owner.call{value: ownerShare}("");
+                            if (success) {
+                                emit FinalDistributionClaimed(owner, ownerShare, ownerSquares);
+                            }
+                        } else {
+                            bool success = IERC20(paymentToken).transfer(owner, ownerShare);
+                            if (success) {
+                                emit FinalDistributionClaimed(owner, ownerShare, ownerSquares);
+                            }
                         }
                     }
                 }
@@ -461,16 +470,30 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
     }
 
     /// @notice Withdraw funds from Aave
-    function _withdrawFromAave(uint256 amount) internal {
+    /// @dev Uses min(amount, aTokenBalance) to handle Aave's interest rounding
+    /// @return actualAmount The actual amount withdrawn (may be less than requested)
+    function _withdrawFromAave(uint256 amount) internal returns (uint256 actualAmount) {
+        // Get actual aToken balance to handle Aave's interest rounding
+        uint256 aTokenBalance = IAToken(aToken).balanceOf(address(this));
+        actualAmount = amount < aTokenBalance ? amount : aTokenBalance;
+
+        if (actualAmount == 0) return 0;
+
         if (paymentToken == address(0)) {
             // For ETH, we need to approve the aWETH to the gateway first
-            IAToken(aToken).approve(address(wethGateway), amount);
-            wethGateway.withdrawETH(address(aavePool), amount, address(this));
+            IAToken(aToken).approve(address(wethGateway), actualAmount);
+            wethGateway.withdrawETH(address(aavePool), actualAmount, address(this));
         } else {
-            aavePool.withdraw(paymentToken, amount, address(this));
+            aavePool.withdraw(paymentToken, actualAmount, address(this));
         }
-        totalPrincipalDeposited -= amount;
-        emit WithdrawnFromAave(amount);
+
+        // Update principal tracking, capped to avoid underflow
+        if (actualAmount >= totalPrincipalDeposited) {
+            totalPrincipalDeposited = 0;
+        } else {
+            totalPrincipalDeposited -= actualAmount;
+        }
+        emit WithdrawnFromAave(actualAmount);
     }
 
     // ============ Admin Functions ============
@@ -479,6 +502,17 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
     function withdrawYield() external {
         // Only factory admin can withdraw yield
         require(msg.sender == ISquaresFactory(factory).admin(), "Only admin");
+        _withdrawYieldToAdmin();
+    }
+
+    /// @notice Withdraw accrued yield (called by factory for batch withdrawal)
+    function withdrawYieldFromFactory() external onlyFactory {
+        _withdrawYieldToAdmin();
+    }
+
+    /// @notice Internal yield withdrawal implementation
+    function _withdrawYieldToAdmin() internal {
+        address admin = ISquaresFactory(factory).admin();
 
         // Game must be finished
         if (state != PoolState.FINAL_SCORED) revert GameNotFinished();
@@ -489,15 +523,15 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
         uint256 aTokenBalance = IAToken(aToken).balanceOf(address(this));
         if (aTokenBalance == 0) revert NoYieldToWithdraw();
 
-        // Withdraw all remaining aTokens (yield)
+        // Withdraw all remaining aTokens (yield) to admin
         if (paymentToken == address(0)) {
             IAToken(aToken).approve(address(wethGateway), aTokenBalance);
-            wethGateway.withdrawETH(address(aavePool), aTokenBalance, msg.sender);
+            wethGateway.withdrawETH(address(aavePool), aTokenBalance, admin);
         } else {
-            aavePool.withdraw(paymentToken, aTokenBalance, msg.sender);
+            aavePool.withdraw(paymentToken, aTokenBalance, admin);
         }
 
-        emit YieldWithdrawn(msg.sender, aTokenBalance);
+        emit YieldWithdrawn(admin, aTokenBalance);
     }
 
     // ============ View Functions ============

@@ -395,4 +395,18 @@ export const SquaresFactoryABI = [
       { name: 'fundsRecipient', type: 'address', indexed: true },
     ],
   },
+  {
+    type: 'function',
+    name: 'withdrawYieldFromAllPools',
+    inputs: [],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  {
+    type: 'event',
+    name: 'YieldWithdrawnFromAllPools',
+    inputs: [
+      { name: 'poolsWithdrawn', type: 'uint256', indexed: false },
+    ],
+  },
 ] as const;

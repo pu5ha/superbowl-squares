@@ -28,6 +28,7 @@ contract SquaresFactory {
     event ScoreSubmittedToAllPools(uint8 indexed quarter, uint8 teamAScore, uint8 teamBScore);
     event PoolCreationPaused(bool paused);
     event AaveAddressesUpdated(address pool, address gateway, address aWETH, address aUSDC);
+    event YieldWithdrawnFromAllPools(uint256 poolsWithdrawn);
 
     // ============ State ============
     address[] public allPools;
@@ -186,6 +187,21 @@ contract SquaresFactory {
         aWETH = _aWETH;
         aUSDC = _aUSDC;
         emit AaveAddressesUpdated(_pool, _gateway, _aWETH, _aUSDC);
+    }
+
+    /// @notice Withdraw yield from all finished pools in a single transaction
+    /// @dev Iterates through all pools and attempts to withdraw yield from each
+    function withdrawYieldFromAllPools() external onlyAdmin {
+        uint256 poolCount = allPools.length;
+        uint256 withdrawn = 0;
+        for (uint256 i = 0; i < poolCount; i++) {
+            try SquaresPool(payable(allPools[i])).withdrawYieldFromFactory() {
+                withdrawn++;
+            } catch {
+                // Skip pools that aren't ready or have no yield
+            }
+        }
+        emit YieldWithdrawnFromAllPools(withdrawn);
     }
 
     // ============ Score Admin Functions ============

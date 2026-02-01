@@ -2,10 +2,10 @@
 
 import { useState, useEffect } from 'react';
 import { useAccount } from 'wagmi';
-import { useAllPools } from '@/hooks/useFactory';
+import { useAllPools, useFactoryAddress } from '@/hooks/useFactory';
 import { useAdminScoreSubmit, useAdminTriggerVRF, SCORE_ADMIN_ADDRESS, useVRFSubscriptionId, useFundVRFSubscription, useCancelVRFSubscription } from '@/hooks/useAdminScoreSubmit';
 import { usePoolCreationPaused, useSetPoolCreationPaused } from '@/hooks/useAdminPoolPause';
-import { usePoolYieldInfo, useWithdrawYield, usePoolState } from '@/hooks/useAdminYield';
+import { usePoolYieldInfo, useWithdrawYield, usePoolState, useWithdrawAllYield } from '@/hooks/useAdminYield';
 import { useReadContract, useChainId } from 'wagmi';
 import { SquaresPoolABI } from '@/lib/abis/SquaresPool';
 import { formatEther, zeroAddress } from 'viem';
@@ -63,6 +63,7 @@ const getNextQuarter = (state: number): number | null => {
 export default function AdminPage() {
   const { address, isConnected } = useAccount();
   const isAdmin = address?.toLowerCase() === SCORE_ADMIN_ADDRESS.toLowerCase();
+  const factoryAddress = useFactoryAddress();
 
   // Score submission form state
   const [selectedQuarter, setSelectedQuarter] = useState<number>(0);
@@ -142,15 +143,15 @@ export default function AdminPage() {
     (finalScore as { submitted?: boolean } | undefined)?.submitted ?? false,
   ];
 
-  // Find the next unsubmitted quarter and auto-select it
+  // Find the next unsubmitted quarter (for display purposes)
   const nextUnsubmittedQuarter = quarterSubmitted.findIndex(submitted => !submitted);
 
-  // Auto-select the first unsubmitted quarter on load
-  useEffect(() => {
-    if (nextUnsubmittedQuarter !== -1 && quarterSubmitted[selectedQuarter]) {
-      setSelectedQuarter(nextUnsubmittedQuarter);
-    }
-  }, [nextUnsubmittedQuarter, quarterSubmitted, selectedQuarter]);
+  // Note: Auto-select disabled to allow resubmitting scores if needed
+  // useEffect(() => {
+  //   if (nextUnsubmittedQuarter !== -1 && quarterSubmitted[selectedQuarter]) {
+  //     setSelectedQuarter(nextUnsubmittedQuarter);
+  //   }
+  // }, [nextUnsubmittedQuarter, quarterSubmitted, selectedQuarter]);
 
   // Refresh scores on score success
   if (isSuccess) {
@@ -225,10 +226,7 @@ export default function AdminPage() {
   }
 
   const handleSubmitScore = () => {
-    if (quarterSubmitted[selectedQuarter]) {
-      alert('This quarter has already been scored');
-      return;
-    }
+    // Note: Resubmission check removed to allow fixing failed submissions
 
     const teamA = parseInt(teamAScore);
     const teamB = parseInt(teamBScore);
@@ -323,7 +321,7 @@ export default function AdminPage() {
 
         {/* Yield Withdrawal Section */}
         {pools && pools.length > 0 && (
-          <YieldWithdrawalSection pools={pools} onRefresh={refetch} />
+          <YieldWithdrawalSection pools={pools} onRefresh={refetch} factoryAddress={factoryAddress} />
         )}
 
         {/* VRF Trigger Section */}
@@ -379,12 +377,9 @@ export default function AdminPage() {
                 return (
                   <button
                     key={index}
-                    onClick={() => !isSubmitted && setSelectedQuarter(index)}
-                    disabled={isSubmitted}
+                    onClick={() => setSelectedQuarter(index)}
                     className={`py-3 px-4 rounded-xl font-bold text-sm transition-all relative ${
-                      isSubmitted
-                        ? 'bg-[var(--steel)]/10 text-[var(--smoke)]/40 cursor-not-allowed border border-[var(--steel)]/20'
-                        : isSelected
+                      isSelected
                         ? 'bg-[var(--turf-green)] text-[var(--midnight)] shadow-[0_0_20px_rgba(34,197,94,0.3)]'
                         : 'bg-[var(--steel)]/20 text-[var(--smoke)] hover:bg-[var(--steel)]/40 border border-[var(--steel)]/30'
                     }`}
@@ -476,9 +471,9 @@ export default function AdminPage() {
               </div>
               <button
                 onClick={handleSubmitScore}
-                disabled={isPending || isConfirming || !teamAScore || !teamBScore || quarterSubmitted[selectedQuarter]}
+                disabled={isPending || isConfirming || !teamAScore || !teamBScore}
                 className={`px-8 py-3 rounded-xl font-bold text-sm transition-all ${
-                  isPending || isConfirming || !teamAScore || !teamBScore || quarterSubmitted[selectedQuarter]
+                  isPending || isConfirming || !teamAScore || !teamBScore
                     ? 'bg-[var(--steel)]/30 text-[var(--smoke)] cursor-not-allowed'
                     : 'bg-gradient-to-r from-[var(--turf-green)] to-[var(--grass-dark)] text-[var(--midnight)] hover:shadow-[0_0_20px_rgba(34,197,94,0.3)]'
                 }`}
@@ -631,17 +626,79 @@ function PoolRow({ address }: { address: `0x${string}` }) {
   );
 }
 
-function YieldWithdrawalSection({ pools, onRefresh }: { pools: `0x${string}`[]; onRefresh: () => void }) {
+function YieldWithdrawalSection({ pools, onRefresh, factoryAddress }: { pools: `0x${string}`[]; onRefresh: () => void; factoryAddress: `0x${string}` | undefined }) {
   const [hasAavePool, setHasAavePool] = useState(false);
+  const [poolsWithYield, setPoolsWithYield] = useState<`0x${string}`[]>([]);
+  const { withdrawAll, isPending, isConfirming, isSuccess, error, reset } = useWithdrawAllYield(factoryAddress);
+
+  const handleWithdrawAll = () => {
+    withdrawAll();
+  };
+
+  // Handle success
+  useEffect(() => {
+    if (isSuccess) {
+      setTimeout(() => {
+        onRefresh();
+        reset();
+      }, 2000);
+    }
+  }, [isSuccess, onRefresh, reset]);
+
+  const addPoolWithYield = (poolAddress: `0x${string}`) => {
+    setPoolsWithYield(prev => {
+      if (prev.includes(poolAddress)) return prev;
+      return [...prev, poolAddress];
+    });
+  };
 
   return (
     <div className="card p-6 mb-8">
-      <h2 className="text-xl font-bold text-[var(--chrome)] mb-4" style={{ fontFamily: 'var(--font-display)' }}>
-        Yield Withdrawal
-      </h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-bold text-[var(--chrome)]" style={{ fontFamily: 'var(--font-display)' }}>
+          Yield Withdrawal
+        </h2>
+        {poolsWithYield.length > 0 && (
+          <button
+            onClick={handleWithdrawAll}
+            disabled={isPending || isConfirming}
+            className={`px-4 py-2 rounded-lg font-bold text-sm transition-all ${
+              isPending || isConfirming
+                ? 'bg-[var(--steel)]/30 text-[var(--smoke)] cursor-not-allowed'
+                : 'bg-gradient-to-r from-[var(--championship-gold)] to-[var(--trophy-gold)] text-[var(--midnight)] hover:shadow-[0_0_20px_rgba(255,215,0,0.3)]'
+            }`}
+          >
+            {isPending ? (
+              <span className="flex items-center gap-2">
+                <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                Confirm in Wallet...
+              </span>
+            ) : isConfirming ? (
+              <span className="flex items-center gap-2">
+                <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                Withdrawing All...
+              </span>
+            ) : (
+              `Withdraw All (${poolsWithYield.length} pools)`
+            )}
+          </button>
+        )}
+      </div>
       <p className="text-[var(--smoke)] mb-4 text-sm">
-        Withdraw accrued yield from finished pools. Yield is generated by depositing pool funds to Aave V3.
+        Withdraw accrued yield from all finished pools in a single transaction.
       </p>
+
+      {isSuccess && (
+        <div className="mb-4 p-3 rounded-lg bg-[var(--turf-green)]/20 border border-[var(--turf-green)]/30">
+          <span className="text-sm text-[var(--turf-green)]">✓ Yield withdrawn from all pools successfully!</span>
+        </div>
+      )}
+
+      {error && (
+        <div className="mb-4 p-3 rounded-lg bg-red-500/20 border border-red-500/30">
+          <span className="text-sm text-red-400">Error: {error.message}</span>
+        </div>
+      )}
 
       <div className="space-y-3">
         {pools.map((poolAddress) => (
@@ -650,6 +707,7 @@ function YieldWithdrawalSection({ pools, onRefresh }: { pools: `0x${string}`[]; 
             poolAddress={poolAddress}
             onRefresh={onRefresh}
             onAaveDetected={() => setHasAavePool(true)}
+            onYieldDetected={() => addPoolWithYield(poolAddress)}
           />
         ))}
       </div>
@@ -671,10 +729,10 @@ function YieldWithdrawalSection({ pools, onRefresh }: { pools: `0x${string}`[]; 
   );
 }
 
-function PoolYieldRow({ poolAddress, onRefresh, onAaveDetected }: { poolAddress: `0x${string}`; onRefresh: () => void; onAaveDetected?: () => void }) {
+function PoolYieldRow({ poolAddress, onRefresh, onAaveDetected, onYieldDetected }: { poolAddress: `0x${string}`; onRefresh: () => void; onAaveDetected?: () => void; onYieldDetected?: () => void }) {
   const chainId = useChainId();
-  const { yieldInfo, isLoading: isLoadingYield, refetch: refetchYield } = usePoolYieldInfo(poolAddress);
-  const { state, isFinished } = usePoolState(poolAddress);
+  const { yieldInfo, isLoading: isLoadingYield } = usePoolYieldInfo(poolAddress);
+  const { isFinished } = usePoolState(poolAddress);
   const { withdrawYield, isPending, isConfirming, isSuccess, error, reset } = useWithdrawYield(poolAddress);
 
   const { data: poolInfo } = useReadContract({
@@ -690,14 +748,22 @@ function PoolYieldRow({ poolAddress, onRefresh, onAaveDetected }: { poolAddress:
     }
   }, [yieldInfo?.aaveConfigured, onAaveDetected]);
 
-  // Handle success
-  if (isSuccess) {
-    setTimeout(() => {
-      refetchYield();
-      onRefresh();
-      reset();
-    }, 2000);
-  }
+  // Notify parent when pool has withdrawable yield (finished pool with yield > 0)
+  useEffect(() => {
+    if (yieldInfo?.yield && yieldInfo.yield > BigInt(0) && isFinished && onYieldDetected) {
+      onYieldDetected();
+    }
+  }, [yieldInfo?.yield, isFinished, onYieldDetected]);
+
+  // Handle withdraw success
+  useEffect(() => {
+    if (isSuccess) {
+      setTimeout(() => {
+        onRefresh();
+        reset();
+      }, 2000);
+    }
+  }, [isSuccess, onRefresh, reset]);
 
   // Don't show if Aave not configured or no yield
   if (isLoadingYield) {
@@ -721,7 +787,6 @@ function PoolYieldRow({ poolAddress, onRefresh, onAaveDetected }: { poolAddress:
   const formattedYield = formatTokenAmount(yieldInfo.yield, token.decimals, 18);
 
   const hasYield = yieldInfo.yield > BigInt(0);
-  const canWithdraw = isFinished && hasYield;
 
   return (
     <div className="p-4 rounded-lg bg-[var(--steel)]/10 border border-[var(--steel)]/30">
@@ -733,7 +798,7 @@ function PoolYieldRow({ poolAddress, onRefresh, onAaveDetected }: { poolAddress:
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-6">
           <div className="text-right">
             <div className="text-sm text-[var(--smoke)]">Principal</div>
             <div className="font-medium text-[var(--chrome)]">
@@ -757,29 +822,30 @@ function PoolYieldRow({ poolAddress, onRefresh, onAaveDetected }: { poolAddress:
             </div>
           </div>
 
-          <button
-            onClick={() => withdrawYield()}
-            disabled={!canWithdraw || isPending || isConfirming}
-            className={`px-4 py-2 rounded-lg font-medium text-sm transition-all ${
-              canWithdraw && !isPending && !isConfirming
-                ? 'bg-[var(--turf-green)] text-[var(--midnight)] hover:shadow-[0_0_15px_rgba(34,197,94,0.3)]'
-                : 'bg-[var(--steel)]/30 text-[var(--smoke)] cursor-not-allowed'
-            }`}
-          >
-            {isPending ? 'Confirm...' : isConfirming ? 'Withdrawing...' : 'Withdraw'}
-          </button>
+          {/* Individual withdraw button as fallback */}
+          {hasYield && isFinished && (
+            <button
+              onClick={() => withdrawYield()}
+              disabled={isPending || isConfirming}
+              className={`px-4 py-2 rounded-lg font-bold text-xs transition-all ${
+                isPending || isConfirming
+                  ? 'bg-[var(--steel)]/30 text-[var(--smoke)] cursor-not-allowed'
+                  : 'bg-[var(--championship-gold)]/20 text-[var(--championship-gold)] border border-[var(--championship-gold)]/30 hover:bg-[var(--championship-gold)]/30'
+              }`}
+            >
+              {isPending ? 'Confirm...' : isConfirming ? 'Withdrawing...' : 'Withdraw'}
+            </button>
+          )}
         </div>
       </div>
-
       {isSuccess && (
-        <div className="mt-3 p-2 rounded bg-[var(--turf-green)]/20 border border-[var(--turf-green)]/30">
-          <span className="text-sm text-[var(--turf-green)]">Yield withdrawn successfully!</span>
+        <div className="mt-2 p-2 rounded bg-[var(--turf-green)]/20 border border-[var(--turf-green)]/30">
+          <span className="text-xs text-[var(--turf-green)]">✓ Yield withdrawn successfully!</span>
         </div>
       )}
-
       {error && (
-        <div className="mt-3 p-2 rounded bg-red-500/20 border border-red-500/30">
-          <span className="text-sm text-red-400">Error: {error.message}</span>
+        <div className="mt-2 p-2 rounded bg-red-500/20 border border-red-500/30">
+          <span className="text-xs text-red-400">Error: {error.message}</span>
         </div>
       )}
     </div>

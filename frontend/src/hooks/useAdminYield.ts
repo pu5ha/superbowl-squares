@@ -2,6 +2,7 @@
 
 import { useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import { SquaresPoolABI } from '@/lib/abis/SquaresPool';
+import { SquaresFactoryABI } from '@/lib/abis/SquaresFactory';
 
 export interface YieldInfo {
   principal: bigint;
@@ -78,5 +79,33 @@ export function usePoolState(poolAddress: `0x${string}` | undefined) {
     state: data as number | undefined,
     isLoading,
     isFinished: data === 6, // FINAL_SCORED = 6
+  };
+}
+
+export function useWithdrawAllYield(factoryAddress: `0x${string}` | undefined) {
+  const { writeContract, data: hash, isPending, error, reset } = useWriteContract();
+
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
+    hash,
+  });
+
+  const withdrawAll = () => {
+    if (!factoryAddress) return;
+
+    writeContract({
+      address: factoryAddress,
+      abi: SquaresFactoryABI,
+      functionName: 'withdrawYieldFromAllPools',
+    });
+  };
+
+  return {
+    withdrawAll,
+    isPending,
+    isConfirming,
+    isSuccess,
+    error,
+    reset,
+    hash,
   };
 }
