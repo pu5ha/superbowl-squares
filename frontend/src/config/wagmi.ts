@@ -80,7 +80,7 @@ export const FACTORY_ADDRESSES: Record<number, `0x${string}`> = {
   // Base
   8453: '0xd573508f1D6B8751F72e3642a32c4Cc2EeFb5eA3',
   // Arbitrum
-  42161: '0x4e670Ce734c08e352b2C7aD8678fCDa63047D248',
+  42161: '0xd573508f1D6B8751F72e3642a32c4Cc2EeFb5eA3',
   // Sepolia (no Aave integration)
   11155111: '0x27b0879ceaD424B20c358d6F2dC097fCd57BdBdE',
 };
