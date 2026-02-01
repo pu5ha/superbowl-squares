@@ -53,6 +53,9 @@ interface ISquaresPool {
     event UnclaimedWinningsRolled(Quarter indexed quarter, uint256 amount, uint256 newTotalRolled);
     event FinalDistributionCalculated(uint256 totalAmount, uint256 squaresSold);
     event FinalDistributionClaimed(address indexed user, uint256 amount, uint256 squaresOwned);
+    event YieldWithdrawn(address indexed admin, uint256 amount);
+    event DepositedToAave(uint256 amount);
+    event WithdrawnFromAave(uint256 amount);
 
     // Player functions
     function buySquares(uint8[] calldata positions, string calldata password) external payable;

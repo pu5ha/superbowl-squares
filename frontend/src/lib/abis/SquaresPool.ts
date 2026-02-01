@@ -248,6 +248,48 @@ export const SquaresPoolABI = [
     stateMutability: 'view',
   },
 
+  // Aave integration functions
+  {
+    type: 'function',
+    name: 'withdrawYield',
+    inputs: [],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  {
+    type: 'function',
+    name: 'totalPrincipalDeposited',
+    inputs: [],
+    outputs: [{ type: 'uint256' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'aToken',
+    inputs: [],
+    outputs: [{ type: 'address' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'aavePool',
+    inputs: [],
+    outputs: [{ type: 'address' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'getYieldInfo',
+    inputs: [],
+    outputs: [
+      { name: 'principal', type: 'uint256' },
+      { name: 'aTokenBalance', type: 'uint256' },
+      { name: 'yield', type: 'uint256' },
+      { name: 'aaveConfigured', type: 'bool' },
+    ],
+    stateMutability: 'view',
+  },
+
   // Events
   {
     type: 'event',
@@ -329,5 +371,23 @@ export const SquaresPoolABI = [
       { name: 'amount', type: 'uint256', indexed: false },
       { name: 'squaresOwned', type: 'uint256', indexed: false },
     ],
+  },
+  {
+    type: 'event',
+    name: 'YieldWithdrawn',
+    inputs: [
+      { name: 'admin', type: 'address', indexed: true },
+      { name: 'amount', type: 'uint256', indexed: false },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'DepositedToAave',
+    inputs: [{ name: 'amount', type: 'uint256', indexed: false }],
+  },
+  {
+    type: 'event',
+    name: 'WithdrawnFromAave',
+    inputs: [{ name: 'amount', type: 'uint256', indexed: false }],
   },
 ] as const;

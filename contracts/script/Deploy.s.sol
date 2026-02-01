@@ -14,6 +14,14 @@ contract Deploy is Script {
         uint256 creationFee;
     }
 
+    // Chain-specific Aave V3 configuration
+    struct AaveConfig {
+        address pool;
+        address wethGateway;
+        address aWETH;
+        address aUSDC;
+    }
+
     // Admin address (has full control: pause creation, set fees, withdraw, etc.)
     // This address will be both admin AND scoreAdmin
     address constant ADMIN = 0x51E5E6F9933fD28B62d714C3f7febECe775b6b95;
@@ -21,6 +29,7 @@ contract Deploy is Script {
     function run() external {
         uint256 chainId = block.chainid;
         ChainConfig memory config = getConfig(chainId);
+        AaveConfig memory aaveConfig = getAaveConfig(chainId);
 
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         vm.startBroadcast(deployerPrivateKey);
@@ -33,6 +42,18 @@ contract Deploy is Script {
 
         // Set VRF funding amount (1 ETH per pool)
         factory.setVRFFundingAmount(1 ether);
+
+        // Set Aave addresses if configured for this chain
+        if (aaveConfig.pool != address(0)) {
+            factory.setAaveAddresses(
+                aaveConfig.pool,
+                aaveConfig.wethGateway,
+                aaveConfig.aWETH,
+                aaveConfig.aUSDC
+            );
+            console.log("Aave Pool:", aaveConfig.pool);
+            console.log("WETH Gateway:", aaveConfig.wethGateway);
+        }
 
         // Set score admin (same as admin for unified control)
         factory.setScoreAdmin(ADMIN);
@@ -115,5 +136,55 @@ contract Deploy is Script {
         }
 
         revert("Unsupported chain");
+    }
+
+    function getAaveConfig(uint256 chainId) internal pure returns (AaveConfig memory) {
+        // Ethereum Sepolia
+        if (chainId == 11155111) {
+            return AaveConfig({
+                pool: 0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951,
+                wethGateway: 0x387d311e47e80b498169e6fb51d3193167d89F7D,
+                aWETH: 0xC558DBdd856501FCd9aaF1E62eae57A9F0629a3c,
+                aUSDC: 0x16dA4541aD1807f4443d92D26044C1147406EB80
+            });
+        }
+
+        // Ethereum Mainnet
+        if (chainId == 1) {
+            return AaveConfig({
+                pool: 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2,
+                wethGateway: 0xD322A49006FC828F9B5B37Ab215F99B4E5caB19C,
+                aWETH: 0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8,
+                aUSDC: 0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c
+            });
+        }
+
+        // Base Mainnet
+        if (chainId == 8453) {
+            return AaveConfig({
+                pool: 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5,
+                wethGateway: 0x8be473dcfA93132559b118a2e512E32B9AB2EEE7,
+                aWETH: 0xD4a0e0b9149BCee3C920d2E00b5dE09138fd8bb7,
+                aUSDC: 0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB
+            });
+        }
+
+        // Arbitrum One
+        if (chainId == 42161) {
+            return AaveConfig({
+                pool: 0x794a61358D6845594F94dc1DB02A252b5b4814aD,
+                wethGateway: 0xecD4bd3121F9FD604ffaC631bF6d41ec12f1fafb,
+                aWETH: 0xe50fA9b3c56FfB159cB0FCA61F5c9D750e8128c8,
+                aUSDC: 0x724dc807b04555b71ed48a6896b6F41593b8C637
+            });
+        }
+
+        // Chains without Aave (testnets, local)
+        return AaveConfig({
+            pool: address(0),
+            wethGateway: address(0),
+            aWETH: address(0),
+            aUSDC: address(0)
+        });
     }
 }

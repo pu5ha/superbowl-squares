@@ -26,6 +26,7 @@ contract SquaresFactory {
     event VRFSubscriptionFunded(uint256 indexed subscriptionId, uint256 amount);
     event ScoreSubmittedToAllPools(uint8 indexed quarter, uint8 teamAScore, uint8 teamBScore);
     event PoolCreationPaused(bool paused);
+    event AaveAddressesUpdated(address pool, address gateway, address aWETH, address aUSDC);
 
     // ============ State ============
     address[] public allPools;
@@ -52,6 +53,12 @@ contract SquaresFactory {
 
     // Pool creation pause state
     bool public poolCreationPaused;
+
+    // Aave V3 configuration
+    address public aavePool;
+    address public wethGateway;
+    address public aWETH;
+    address public aUSDC;
 
     // ============ Errors ============
     error OnlyAdmin();
@@ -138,6 +145,24 @@ contract SquaresFactory {
         emit PoolCreationPaused(_paused);
     }
 
+    /// @notice Set Aave V3 addresses for yield generation
+    /// @param _pool Aave Pool contract address
+    /// @param _gateway WETH Gateway contract address
+    /// @param _aWETH aWETH token address
+    /// @param _aUSDC aUSDC token address
+    function setAaveAddresses(
+        address _pool,
+        address _gateway,
+        address _aWETH,
+        address _aUSDC
+    ) external onlyAdmin {
+        aavePool = _pool;
+        wethGateway = _gateway;
+        aWETH = _aWETH;
+        aUSDC = _aUSDC;
+        emit AaveAddressesUpdated(_pool, _gateway, _aWETH, _aUSDC);
+    }
+
     // ============ Score Admin Functions ============
 
     /// @notice Submit score to all pools that are ready for this quarter
@@ -211,6 +236,13 @@ contract SquaresFactory {
             defaultVRFSubscriptionId,
             defaultVRFKeyHash
         );
+
+        // Set Aave config if configured
+        if (aavePool != address(0)) {
+            // Determine correct aToken based on payment token
+            address poolAToken = params.paymentToken == address(0) ? aWETH : aUSDC;
+            newPool.setAaveConfig(aavePool, wethGateway, poolAToken);
+        }
 
         pool = address(newPool);
 

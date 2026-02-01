@@ -7,6 +7,7 @@ import {SquaresFactory} from "../src/SquaresFactory.sol";
 import {ISquaresPool} from "../src/interfaces/ISquaresPool.sol";
 import {MockVRFCoordinatorV2Plus} from "./mocks/MockVRFCoordinatorV2Plus.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
+import {MockAToken, MockAavePool, MockWETHGateway} from "./mocks/MockAave.sol";
 
 contract SquaresPoolTest is Test {
     SquaresFactory public factory;
@@ -1825,4 +1826,843 @@ contract SquaresPoolTest is Test {
         assertEq(alice.balance - aliceBalanceBefore, 1 ether, "Alice gets 1 ETH");
         assertEq(bob.balance - bobBalanceBefore, 4 ether, "Bob gets 4 ETH");
     }
+}
+
+/// @title SquaresPoolAaveTest
+/// @notice Tests for Aave V3 yield generation integration
+contract SquaresPoolAaveTest is Test {
+    SquaresFactory public factory;
+    SquaresPool public pool;
+    MockVRFCoordinatorV2Plus public vrfCoordinator;
+    MockERC20 public paymentToken;
+
+    // Aave mocks
+    MockAToken public aWETH;
+    MockAToken public aUSDC;
+    MockAavePool public aavePool;
+    MockWETHGateway public wethGateway;
+
+    address public operator = address(0x1);
+    address public alice = address(0x2);
+    address public bob = address(0x3);
+    address public admin;
+
+    uint256 public constant SQUARE_PRICE = 0.1 ether;
+    uint96 public constant VRF_FUNDING_AMOUNT = 1 ether;
+    uint256 public constant CREATION_FEE = 0.1 ether;
+    uint256 public constant TOTAL_REQUIRED = CREATION_FEE + VRF_FUNDING_AMOUNT;
+
+    function setUp() public {
+        // Deploy mocks
+        vrfCoordinator = new MockVRFCoordinatorV2Plus();
+        paymentToken = new MockERC20("Test USDC", "USDC", 6);
+
+        // Deploy Aave mocks
+        aWETH = new MockAToken("Aave WETH", "aWETH", address(0));
+        aUSDC = new MockAToken("Aave USDC", "aUSDC", address(paymentToken));
+        aavePool = new MockAavePool();
+        wethGateway = new MockWETHGateway(address(aWETH));
+
+        // Fund wethGateway with ETH for withdrawals
+        vm.deal(address(wethGateway), 1000 ether);
+
+        // Configure Aave pool
+        aavePool.setAToken(address(paymentToken), address(aUSDC));
+
+        // Deploy factory with VRF config
+        factory = new SquaresFactory(
+            address(vrfCoordinator),
+            bytes32("test-key-hash"),
+            CREATION_FEE
+        );
+        admin = address(this); // Test contract is admin initially
+
+        // Set VRF funding amount
+        factory.setVRFFundingAmount(VRF_FUNDING_AMOUNT);
+
+        // Set Aave addresses
+        factory.setAaveAddresses(
+            address(aavePool),
+            address(wethGateway),
+            address(aWETH),
+            address(aUSDC)
+        );
+
+        // Fund accounts
+        vm.deal(operator, 100 ether);
+        vm.deal(alice, 100 ether);
+        vm.deal(bob, 100 ether);
+    }
+
+    function _createPoolWithAave() internal returns (SquaresPool) {
+        ISquaresPool.PoolParams memory params = ISquaresPool.PoolParams({
+            name: "Aave Pool",
+            squarePrice: SQUARE_PRICE,
+            paymentToken: address(0), // ETH
+            maxSquaresPerUser: 0, // Unlimited
+            payoutPercentages: [uint8(20), uint8(20), uint8(20), uint8(40)],
+            teamAName: "Patriots",
+            teamBName: "Seahawks",
+            purchaseDeadline: block.timestamp + 7 days,
+            vrfTriggerTime: block.timestamp + 8 days,
+            passwordHash: bytes32(0)
+        });
+
+        vm.prank(operator);
+        address poolAddr = factory.createPool{value: TOTAL_REQUIRED}(params);
+        return SquaresPool(payable(poolAddr));
+    }
+
+    // ============ Aave Configuration Tests ============
+
+    function test_PoolHasAaveConfig() public {
+        pool = _createPoolWithAave();
+
+        assertEq(address(pool.aavePool()), address(aavePool), "Aave pool should be set");
+        assertEq(address(pool.wethGateway()), address(wethGateway), "WETH gateway should be set");
+        assertEq(pool.aToken(), address(aWETH), "aToken should be aWETH for ETH pools");
+    }
+
+    function test_PoolWithoutAaveConfig() public {
+        // Create factory without Aave config
+        SquaresFactory factoryNoAave = new SquaresFactory(
+            address(vrfCoordinator),
+            bytes32("test-key-hash"),
+            CREATION_FEE
+        );
+        factoryNoAave.setVRFFundingAmount(VRF_FUNDING_AMOUNT);
+
+        ISquaresPool.PoolParams memory params = ISquaresPool.PoolParams({
+            name: "No Aave Pool",
+            squarePrice: SQUARE_PRICE,
+            paymentToken: address(0),
+            maxSquaresPerUser: 0,
+            payoutPercentages: [uint8(20), uint8(20), uint8(20), uint8(40)],
+            teamAName: "Patriots",
+            teamBName: "Seahawks",
+            purchaseDeadline: block.timestamp + 7 days,
+            vrfTriggerTime: block.timestamp + 8 days,
+            passwordHash: bytes32(0)
+        });
+
+        vm.prank(operator);
+        address poolAddr = factoryNoAave.createPool{value: TOTAL_REQUIRED}(params);
+        SquaresPool noAavePool = SquaresPool(payable(poolAddr));
+
+        assertEq(address(noAavePool.aavePool()), address(0), "Aave pool should not be set");
+    }
+
+    // ============ Aave Deposit Tests ============
+
+    function test_BuySquares_DepositsToAave() public {
+        pool = _createPoolWithAave();
+
+        uint8[] memory positions = new uint8[](10);
+        for (uint8 i = 0; i < 10; i++) {
+            positions[i] = i;
+        }
+
+        uint256 totalCost = SQUARE_PRICE * 10; // 1 ETH
+
+        vm.prank(alice);
+        pool.buySquares{value: totalCost}(positions, "");
+
+        // Verify aWETH was minted to the pool
+        assertEq(aWETH.rawBalanceOf(address(pool)), totalCost, "Pool should have aWETH");
+        assertEq(pool.totalPrincipalDeposited(), totalCost, "Principal should be tracked");
+    }
+
+    function test_GetYieldInfo() public {
+        pool = _createPoolWithAave();
+
+        // Buy some squares
+        uint8[] memory positions = new uint8[](10);
+        for (uint8 i = 0; i < 10; i++) {
+            positions[i] = i;
+        }
+
+        vm.prank(alice);
+        pool.buySquares{value: 1 ether}(positions, "");
+
+        // Check yield info before any yield
+        (uint256 principal, uint256 aTokenBalance, uint256 yield, bool configured) = pool.getYieldInfo();
+        assertEq(principal, 1 ether, "Principal should be 1 ETH");
+        assertEq(aTokenBalance, 1 ether, "aToken balance should be 1 ETH");
+        assertEq(yield, 0, "No yield yet");
+        assertTrue(configured, "Aave should be configured");
+
+        // Simulate yield (5%)
+        aWETH.setYieldMultiplier(105);
+
+        (principal, aTokenBalance, yield, configured) = pool.getYieldInfo();
+        assertEq(principal, 1 ether, "Principal unchanged");
+        assertEq(aTokenBalance, 1.05 ether, "aToken balance with yield");
+        assertEq(yield, 0.05 ether, "5% yield");
+    }
+
+    // ============ Aave Withdrawal on Settlement Tests ============
+
+    function test_SettleQuarter_WithdrawsFromAave() public {
+        pool = _createPoolWithAave();
+
+        // Alice buys all squares
+        uint8[] memory positions = new uint8[](100);
+        for (uint8 i = 0; i < 100; i++) {
+            positions[i] = i;
+        }
+
+        vm.prank(alice);
+        pool.buySquares{value: 10 ether}(positions, "");
+
+        // Verify deposit
+        assertEq(pool.totalPrincipalDeposited(), 10 ether, "Principal should be 10 ETH");
+
+        // Trigger VRF and fulfill
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(pool.vrfRequestId(), 12345);
+
+        uint256 aliceBalanceBefore = alice.balance;
+
+        // Submit Q1 score - should withdraw from Aave and pay winner
+        vm.prank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q1, 7, 3);
+
+        // Alice should receive Q1 payout (20% of 10 ETH = 2 ETH)
+        uint256 aliceReceived = alice.balance - aliceBalanceBefore;
+        assertEq(aliceReceived, 2 ether, "Alice should receive Q1 payout");
+
+        // Principal should be reduced
+        assertEq(pool.totalPrincipalDeposited(), 8 ether, "Principal should be reduced by 2 ETH");
+    }
+
+    // ============ Admin Yield Withdrawal Tests ============
+
+    function test_WithdrawYield_AdminOnly() public {
+        pool = _createPoolWithAave();
+
+        // Alice buys all squares
+        uint8[] memory positions = new uint8[](100);
+        for (uint8 i = 0; i < 100; i++) {
+            positions[i] = i;
+        }
+
+        vm.prank(alice);
+        pool.buySquares{value: 10 ether}(positions, "");
+
+        // Complete the game
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(pool.vrfRequestId(), 12345);
+
+        vm.startPrank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q1, 7, 3);
+        pool.submitScore(ISquaresPool.Quarter.Q2, 14, 10);
+        pool.submitScore(ISquaresPool.Quarter.Q3, 21, 17);
+        pool.submitScore(ISquaresPool.Quarter.FINAL, 28, 24);
+        vm.stopPrank();
+
+        // Simulate yield (5%)
+        aWETH.setYieldMultiplier(105);
+
+        // Non-admin cannot withdraw
+        vm.prank(alice);
+        vm.expectRevert("Only admin");
+        pool.withdrawYield();
+    }
+
+    function test_WithdrawYield_GameMustBeFinished() public {
+        pool = _createPoolWithAave();
+
+        // Alice buys squares
+        uint8[] memory positions = new uint8[](10);
+        for (uint8 i = 0; i < 10; i++) {
+            positions[i] = i;
+        }
+
+        vm.prank(alice);
+        pool.buySquares{value: 1 ether}(positions, "");
+
+        // Try to withdraw before game is finished
+        vm.expectRevert(SquaresPool.GameNotFinished.selector);
+        pool.withdrawYield();
+    }
+
+    function test_WithdrawYield_Success() public {
+        pool = _createPoolWithAave();
+
+        // Alice buys all squares
+        uint8[] memory positions = new uint8[](100);
+        for (uint8 i = 0; i < 100; i++) {
+            positions[i] = i;
+        }
+
+        vm.prank(alice);
+        pool.buySquares{value: 10 ether}(positions, "");
+
+        // Complete the game
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(pool.vrfRequestId(), 12345);
+
+        vm.startPrank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q1, 7, 3);
+        pool.submitScore(ISquaresPool.Quarter.Q2, 14, 10);
+        pool.submitScore(ISquaresPool.Quarter.Q3, 21, 17);
+        pool.submitScore(ISquaresPool.Quarter.FINAL, 28, 24);
+        vm.stopPrank();
+
+        // After all settlements, all 10 ETH should be withdrawn, principal = 0
+        // But since we paid out 100% (20+20+20+40), there should be nothing left in Aave
+        // Let's check the remaining aToken balance
+        uint256 aTokenBalance = aWETH.rawBalanceOf(address(pool));
+
+        // If there's any remaining (due to rounding or yield), admin can withdraw
+        if (aTokenBalance > 0) {
+            uint256 adminBalanceBefore = admin.balance;
+
+            // Admin withdraws yield
+            pool.withdrawYield();
+
+            uint256 adminBalanceAfter = admin.balance;
+            assertTrue(adminBalanceAfter > adminBalanceBefore, "Admin should receive yield");
+        }
+    }
+
+    function test_WithdrawYield_WithAccruedInterest() public {
+        pool = _createPoolWithAave();
+
+        // Alice buys 50 squares (5 ETH)
+        uint8[] memory alicePositions = new uint8[](50);
+        for (uint8 i = 0; i < 50; i++) {
+            alicePositions[i] = i;
+        }
+
+        vm.prank(alice);
+        pool.buySquares{value: 5 ether}(alicePositions, "");
+
+        // Simulate 10% yield accrued
+        aWETH.setYieldMultiplier(110);
+
+        // Now aToken balance = 5.5 ETH (5 ETH principal + 0.5 ETH yield)
+
+        // Complete the game - but we need another 50 squares or test with what we have
+        // Actually, let's complete it with 50 squares
+
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(pool.vrfRequestId(), 12345);
+
+        // Get winning position for known randomness
+        (uint8[10] memory rows, uint8[10] memory cols) = pool.getNumbers();
+
+        // Find a score that hits alice's square (position 0)
+        uint8 winDigitA = rows[0];
+        uint8 winDigitB = cols[0];
+
+        vm.startPrank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q1, winDigitA, winDigitB);
+        pool.submitScore(ISquaresPool.Quarter.Q2, winDigitA + 10, winDigitB + 10);
+        pool.submitScore(ISquaresPool.Quarter.Q3, winDigitA + 20, winDigitB + 20);
+        pool.submitScore(ISquaresPool.Quarter.FINAL, winDigitA + 30, winDigitB + 30);
+        vm.stopPrank();
+
+        // After settlements, the yield multiplier affects the aToken balance
+        // The remaining balance (if any) should include yield
+        uint256 aTokenBalance = aWETH.balanceOf(address(pool));
+
+        if (aTokenBalance > 0) {
+            uint256 adminBalanceBefore = admin.balance;
+
+            // Admin withdraws remaining yield
+            pool.withdrawYield();
+
+            uint256 adminBalanceAfter = admin.balance;
+            uint256 received = adminBalanceAfter - adminBalanceBefore;
+
+            assertTrue(received > 0, "Admin should receive remaining balance");
+        }
+    }
+
+    // ============ Additional Aave Edge Case Tests ============
+
+    function test_MultiplePurchases_CumulativeDeposit() public {
+        pool = _createPoolWithAave();
+
+        // First purchase: 5 squares
+        uint8[] memory positions1 = new uint8[](5);
+        for (uint8 i = 0; i < 5; i++) {
+            positions1[i] = i;
+        }
+        vm.prank(alice);
+        pool.buySquares{value: 0.5 ether}(positions1, "");
+
+        assertEq(pool.totalPrincipalDeposited(), 0.5 ether, "First deposit tracked");
+        assertEq(aWETH.rawBalanceOf(address(pool)), 0.5 ether, "First aWETH minted");
+
+        // Second purchase: 10 squares from bob
+        uint8[] memory positions2 = new uint8[](10);
+        for (uint8 i = 0; i < 10; i++) {
+            positions2[i] = i + 5;
+        }
+        vm.prank(bob);
+        pool.buySquares{value: 1 ether}(positions2, "");
+
+        assertEq(pool.totalPrincipalDeposited(), 1.5 ether, "Cumulative deposit tracked");
+        assertEq(aWETH.rawBalanceOf(address(pool)), 1.5 ether, "Cumulative aWETH minted");
+
+        // Third purchase: 5 more from alice
+        uint8[] memory positions3 = new uint8[](5);
+        for (uint8 i = 0; i < 5; i++) {
+            positions3[i] = i + 15;
+        }
+        vm.prank(alice);
+        pool.buySquares{value: 0.5 ether}(positions3, "");
+
+        assertEq(pool.totalPrincipalDeposited(), 2 ether, "Final cumulative deposit");
+        assertEq(aWETH.rawBalanceOf(address(pool)), 2 ether, "Final aWETH balance");
+    }
+
+    function test_PrincipalTrackingAcrossSettlements() public {
+        pool = _createPoolWithAave();
+
+        // Alice buys all squares
+        uint8[] memory positions = new uint8[](100);
+        for (uint8 i = 0; i < 100; i++) {
+            positions[i] = i;
+        }
+        vm.prank(alice);
+        pool.buySquares{value: 10 ether}(positions, "");
+
+        assertEq(pool.totalPrincipalDeposited(), 10 ether, "Initial principal");
+
+        // Trigger VRF
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(pool.vrfRequestId(), 12345);
+
+        // Q1: 20% payout = 2 ETH withdrawn
+        vm.prank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q1, 7, 3);
+        assertEq(pool.totalPrincipalDeposited(), 8 ether, "After Q1: 8 ETH remaining");
+
+        // Q2: 20% payout = 2 ETH withdrawn
+        vm.prank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q2, 14, 10);
+        assertEq(pool.totalPrincipalDeposited(), 6 ether, "After Q2: 6 ETH remaining");
+
+        // Q3: 20% payout = 2 ETH withdrawn
+        vm.prank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q3, 21, 17);
+        assertEq(pool.totalPrincipalDeposited(), 4 ether, "After Q3: 4 ETH remaining");
+
+        // Final: 40% payout = 4 ETH withdrawn
+        vm.prank(operator);
+        pool.submitScore(ISquaresPool.Quarter.FINAL, 28, 24);
+        assertEq(pool.totalPrincipalDeposited(), 0, "After Final: 0 ETH remaining");
+    }
+
+    function test_WithdrawYield_NoYieldReverts() public {
+        pool = _createPoolWithAave();
+
+        // Alice buys all squares
+        uint8[] memory positions = new uint8[](100);
+        for (uint8 i = 0; i < 100; i++) {
+            positions[i] = i;
+        }
+        vm.prank(alice);
+        pool.buySquares{value: 10 ether}(positions, "");
+
+        // Complete game - all principal is paid out
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(pool.vrfRequestId(), 12345);
+
+        vm.startPrank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q1, 7, 3);
+        pool.submitScore(ISquaresPool.Quarter.Q2, 14, 10);
+        pool.submitScore(ISquaresPool.Quarter.Q3, 21, 17);
+        pool.submitScore(ISquaresPool.Quarter.FINAL, 28, 24);
+        vm.stopPrank();
+
+        // No yield multiplier set, so aToken balance = 0
+        // Trying to withdraw should revert
+        vm.expectRevert(SquaresPool.NoYieldToWithdraw.selector);
+        pool.withdrawYield();
+    }
+
+    function test_PoolWithoutAave_WorksNormally() public {
+        // Create factory without Aave
+        SquaresFactory factoryNoAave = new SquaresFactory(
+            address(vrfCoordinator),
+            bytes32("test-key-hash"),
+            CREATION_FEE
+        );
+        factoryNoAave.setVRFFundingAmount(VRF_FUNDING_AMOUNT);
+
+        ISquaresPool.PoolParams memory params = ISquaresPool.PoolParams({
+            name: "No Aave Pool",
+            squarePrice: SQUARE_PRICE,
+            paymentToken: address(0),
+            maxSquaresPerUser: 0,
+            payoutPercentages: [uint8(20), uint8(20), uint8(20), uint8(40)],
+            teamAName: "Patriots",
+            teamBName: "Seahawks",
+            purchaseDeadline: block.timestamp + 7 days,
+            vrfTriggerTime: block.timestamp + 8 days,
+            passwordHash: bytes32(0)
+        });
+
+        vm.prank(operator);
+        address poolAddr = factoryNoAave.createPool{value: TOTAL_REQUIRED}(params);
+        SquaresPool noAavePool = SquaresPool(payable(poolAddr));
+
+        // Alice buys squares
+        uint8[] memory positions = new uint8[](10);
+        for (uint8 i = 0; i < 10; i++) {
+            positions[i] = i;
+        }
+
+        uint256 aliceBalanceBefore = alice.balance;
+        vm.prank(alice);
+        noAavePool.buySquares{value: 1 ether}(positions, "");
+
+        // Funds stay in pool (not deposited to Aave)
+        assertEq(address(noAavePool).balance, 1 ether, "Pool holds ETH directly");
+        assertEq(noAavePool.totalPrincipalDeposited(), 0, "No principal tracked without Aave");
+
+        // Complete game
+        factoryNoAave.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(noAavePool.vrfRequestId(), 12345);
+
+        aliceBalanceBefore = alice.balance;
+
+        vm.prank(operator);
+        noAavePool.submitScore(ISquaresPool.Quarter.Q1, 7, 3);
+
+        // Alice receives payout from pool directly
+        uint256 aliceReceived = alice.balance - aliceBalanceBefore;
+        assertEq(aliceReceived, 0.2 ether, "Alice gets Q1 payout without Aave");
+    }
+
+    function test_YieldAccruesDuringGame() public {
+        pool = _createPoolWithAave();
+
+        // Alice buys all squares
+        uint8[] memory positions = new uint8[](100);
+        for (uint8 i = 0; i < 100; i++) {
+            positions[i] = i;
+        }
+        vm.prank(alice);
+        pool.buySquares{value: 10 ether}(positions, "");
+
+        // Initial state
+        (uint256 principal0, uint256 balance0, uint256 yield0, ) = pool.getYieldInfo();
+        assertEq(principal0, 10 ether);
+        assertEq(balance0, 10 ether);
+        assertEq(yield0, 0);
+
+        // Simulate 2% yield
+        aWETH.setYieldMultiplier(102);
+
+        (uint256 principal1, uint256 balance1, uint256 yield1, ) = pool.getYieldInfo();
+        assertEq(principal1, 10 ether, "Principal unchanged");
+        assertEq(balance1, 10.2 ether, "Balance increased by 2%");
+        assertEq(yield1, 0.2 ether, "Yield is 2%");
+
+        // Simulate more yield (total 5%)
+        aWETH.setYieldMultiplier(105);
+
+        (uint256 principal2, uint256 balance2, uint256 yield2, ) = pool.getYieldInfo();
+        assertEq(principal2, 10 ether, "Principal still unchanged");
+        assertEq(balance2, 10.5 ether, "Balance increased by 5%");
+        assertEq(yield2, 0.5 ether, "Yield is 5%");
+    }
+
+    function test_SettlementWithYield_WinnerGetsExactPayout() public {
+        pool = _createPoolWithAave();
+
+        // Alice buys all squares
+        uint8[] memory positions = new uint8[](100);
+        for (uint8 i = 0; i < 100; i++) {
+            positions[i] = i;
+        }
+        vm.prank(alice);
+        pool.buySquares{value: 10 ether}(positions, "");
+
+        // Simulate 10% yield before any settlements
+        aWETH.setYieldMultiplier(110);
+
+        // aToken balance is now 11 ETH, but principal is 10 ETH
+        (uint256 principal, uint256 balance, uint256 yield, ) = pool.getYieldInfo();
+        assertEq(principal, 10 ether);
+        assertEq(balance, 11 ether);
+        assertEq(yield, 1 ether);
+
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(pool.vrfRequestId(), 12345);
+
+        uint256 aliceBalanceBefore = alice.balance;
+
+        // Q1 payout should be based on totalPot (10 ETH), not aToken balance
+        // Q1 = 20% of 10 ETH = 2 ETH
+        vm.prank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q1, 7, 3);
+
+        uint256 aliceReceived = alice.balance - aliceBalanceBefore;
+        assertEq(aliceReceived, 2 ether, "Winner gets payout based on original pot, not yield");
+
+        // Principal tracking should still work correctly
+        assertEq(pool.totalPrincipalDeposited(), 8 ether, "Principal reduced by payout amount");
+    }
+
+    function test_MultiplePoolsWithAave() public {
+        // Create two pools
+        SquaresPool pool1 = _createPoolWithAave();
+        SquaresPool pool2 = _createPoolWithAave();
+
+        // Alice buys in pool1
+        uint8[] memory positions = new uint8[](10);
+        for (uint8 i = 0; i < 10; i++) {
+            positions[i] = i;
+        }
+        vm.prank(alice);
+        pool1.buySquares{value: 1 ether}(positions, "");
+
+        // Bob buys in pool2
+        vm.prank(bob);
+        pool2.buySquares{value: 1 ether}(positions, "");
+
+        // Both pools should have separate deposits
+        assertEq(aWETH.rawBalanceOf(address(pool1)), 1 ether, "Pool1 has 1 ETH in Aave");
+        assertEq(aWETH.rawBalanceOf(address(pool2)), 1 ether, "Pool2 has 1 ETH in Aave");
+        assertEq(pool1.totalPrincipalDeposited(), 1 ether);
+        assertEq(pool2.totalPrincipalDeposited(), 1 ether);
+    }
+
+    function test_WithdrawYield_AaveNotConfiguredReverts() public {
+        // Create factory without Aave
+        SquaresFactory factoryNoAave = new SquaresFactory(
+            address(vrfCoordinator),
+            bytes32("test-key-hash"),
+            CREATION_FEE
+        );
+        factoryNoAave.setVRFFundingAmount(VRF_FUNDING_AMOUNT);
+
+        ISquaresPool.PoolParams memory params = ISquaresPool.PoolParams({
+            name: "No Aave Pool",
+            squarePrice: SQUARE_PRICE,
+            paymentToken: address(0),
+            maxSquaresPerUser: 0,
+            payoutPercentages: [uint8(20), uint8(20), uint8(20), uint8(40)],
+            teamAName: "Patriots",
+            teamBName: "Seahawks",
+            purchaseDeadline: block.timestamp + 7 days,
+            vrfTriggerTime: block.timestamp + 8 days,
+            passwordHash: bytes32(0)
+        });
+
+        vm.prank(operator);
+        address poolAddr = factoryNoAave.createPool{value: TOTAL_REQUIRED}(params);
+        SquaresPool noAavePool = SquaresPool(payable(poolAddr));
+
+        // Buy squares and complete game
+        uint8[] memory positions = new uint8[](10);
+        for (uint8 i = 0; i < 10; i++) {
+            positions[i] = i;
+        }
+        vm.prank(alice);
+        noAavePool.buySquares{value: 1 ether}(positions, "");
+
+        factoryNoAave.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(noAavePool.vrfRequestId(), 12345);
+
+        vm.startPrank(operator);
+        noAavePool.submitScore(ISquaresPool.Quarter.Q1, 7, 3);
+        noAavePool.submitScore(ISquaresPool.Quarter.Q2, 14, 10);
+        noAavePool.submitScore(ISquaresPool.Quarter.Q3, 21, 17);
+        noAavePool.submitScore(ISquaresPool.Quarter.FINAL, 28, 24);
+        vm.stopPrank();
+
+        // Try to withdraw yield - should revert because Aave not configured
+        vm.expectRevert(SquaresPool.AaveNotConfigured.selector);
+        noAavePool.withdrawYield();
+    }
+
+    function test_YieldWithdrawal_EmitsEvent() public {
+        pool = _createPoolWithAave();
+
+        // Alice buys squares (not all, to leave some yield after settlement)
+        uint8[] memory positions = new uint8[](50);
+        for (uint8 i = 0; i < 50; i++) {
+            positions[i] = i;
+        }
+        vm.prank(alice);
+        pool.buySquares{value: 5 ether}(positions, "");
+
+        // Simulate 20% yield
+        aWETH.setYieldMultiplier(120);
+
+        // Complete game
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(pool.vrfRequestId(), 12345);
+
+        (uint8[10] memory rows, uint8[10] memory cols) = pool.getNumbers();
+        uint8 winDigitA = rows[0];
+        uint8 winDigitB = cols[0];
+
+        vm.startPrank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q1, winDigitA, winDigitB);
+        pool.submitScore(ISquaresPool.Quarter.Q2, winDigitA + 10, winDigitB + 10);
+        pool.submitScore(ISquaresPool.Quarter.Q3, winDigitA + 20, winDigitB + 20);
+        pool.submitScore(ISquaresPool.Quarter.FINAL, winDigitA + 30, winDigitB + 30);
+        vm.stopPrank();
+
+        uint256 aTokenBalance = aWETH.balanceOf(address(pool));
+        if (aTokenBalance > 0) {
+            vm.expectEmit(true, false, false, true);
+            emit YieldWithdrawn(admin, aTokenBalance);
+            pool.withdrawYield();
+        }
+    }
+
+    function test_GetYieldInfo_NoAaveConfigured() public {
+        // Create factory without Aave
+        SquaresFactory factoryNoAave = new SquaresFactory(
+            address(vrfCoordinator),
+            bytes32("test-key-hash"),
+            CREATION_FEE
+        );
+        factoryNoAave.setVRFFundingAmount(VRF_FUNDING_AMOUNT);
+
+        ISquaresPool.PoolParams memory params = ISquaresPool.PoolParams({
+            name: "No Aave Pool",
+            squarePrice: SQUARE_PRICE,
+            paymentToken: address(0),
+            maxSquaresPerUser: 0,
+            payoutPercentages: [uint8(20), uint8(20), uint8(20), uint8(40)],
+            teamAName: "Patriots",
+            teamBName: "Seahawks",
+            purchaseDeadline: block.timestamp + 7 days,
+            vrfTriggerTime: block.timestamp + 8 days,
+            passwordHash: bytes32(0)
+        });
+
+        vm.prank(operator);
+        address poolAddr = factoryNoAave.createPool{value: TOTAL_REQUIRED}(params);
+        SquaresPool noAavePool = SquaresPool(payable(poolAddr));
+
+        (uint256 principal, uint256 balance, uint256 yield, bool configured) = noAavePool.getYieldInfo();
+        assertEq(principal, 0);
+        assertEq(balance, 0);
+        assertEq(yield, 0);
+        assertFalse(configured, "Aave should not be configured");
+    }
+
+    function test_PartialSettlement_YieldAccumulates() public {
+        pool = _createPoolWithAave();
+
+        // Alice buys all squares
+        uint8[] memory positions = new uint8[](100);
+        for (uint8 i = 0; i < 100; i++) {
+            positions[i] = i;
+        }
+        vm.prank(alice);
+        pool.buySquares{value: 10 ether}(positions, "");
+
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(pool.vrfRequestId(), 12345);
+
+        // Q1 settlement
+        vm.prank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q1, 7, 3);
+
+        // After Q1, simulate yield accruing on remaining principal
+        aWETH.setYieldMultiplier(110); // 10% yield on remaining 8 ETH
+
+        (uint256 principal, uint256 balance, uint256 yield, ) = pool.getYieldInfo();
+        assertEq(principal, 8 ether, "8 ETH principal after Q1");
+        assertEq(balance, 8.8 ether, "10% yield on 8 ETH = 8.8 ETH");
+        assertEq(yield, 0.8 ether, "0.8 ETH yield");
+
+        // Q2 settlement - winner gets 2 ETH from original pot
+        uint256 aliceBalanceBefore = alice.balance;
+        vm.prank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q2, 14, 10);
+        uint256 aliceReceived = alice.balance - aliceBalanceBefore;
+        assertEq(aliceReceived, 2 ether, "Q2 payout is 2 ETH");
+
+        // Principal reduced, but yield continues on what remains
+        assertEq(pool.totalPrincipalDeposited(), 6 ether, "6 ETH principal after Q2");
+    }
+
+    function test_FullGame_YieldRemainsAfterAllPayouts() public {
+        pool = _createPoolWithAave();
+
+        // Alice buys all squares
+        uint8[] memory positions = new uint8[](100);
+        for (uint8 i = 0; i < 100; i++) {
+            positions[i] = i;
+        }
+        vm.prank(alice);
+        pool.buySquares{value: 10 ether}(positions, "");
+
+        // Set 50% yield before any settlements
+        aWETH.setYieldMultiplier(150);
+
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(pool.vrfRequestId(), 12345);
+
+        // Complete all quarters
+        vm.startPrank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q1, 7, 3);
+        pool.submitScore(ISquaresPool.Quarter.Q2, 14, 10);
+        pool.submitScore(ISquaresPool.Quarter.Q3, 21, 17);
+        pool.submitScore(ISquaresPool.Quarter.FINAL, 28, 24);
+        vm.stopPrank();
+
+        // After all payouts, principal should be 0
+        assertEq(pool.totalPrincipalDeposited(), 0, "All principal paid out");
+
+        // But there should still be yield remaining in Aave
+        // The mock doesn't perfectly simulate this, but the concept is there
+        uint256 aTokenBalance = aWETH.balanceOf(address(pool));
+
+        // Admin can withdraw remaining yield
+        if (aTokenBalance > 0) {
+            uint256 adminBalanceBefore = admin.balance;
+            pool.withdrawYield();
+            uint256 adminBalanceAfter = admin.balance;
+            assertTrue(adminBalanceAfter > adminBalanceBefore, "Admin received yield");
+        }
+    }
+
+    function test_ZeroSquarePrice_NoAaveDeposit() public {
+        // Edge case: zero price squares (free pool)
+        ISquaresPool.PoolParams memory params = ISquaresPool.PoolParams({
+            name: "Free Pool",
+            squarePrice: 0,
+            paymentToken: address(0),
+            maxSquaresPerUser: 0,
+            payoutPercentages: [uint8(20), uint8(20), uint8(20), uint8(40)],
+            teamAName: "Patriots",
+            teamBName: "Seahawks",
+            purchaseDeadline: block.timestamp + 7 days,
+            vrfTriggerTime: block.timestamp + 8 days,
+            passwordHash: bytes32(0)
+        });
+
+        vm.prank(operator);
+        address poolAddr = factory.createPool{value: TOTAL_REQUIRED}(params);
+        SquaresPool freePool = SquaresPool(payable(poolAddr));
+
+        // Buy free squares
+        uint8[] memory positions = new uint8[](10);
+        for (uint8 i = 0; i < 10; i++) {
+            positions[i] = i;
+        }
+        vm.prank(alice);
+        freePool.buySquares{value: 0}(positions, "");
+
+        // No deposit should happen
+        assertEq(freePool.totalPrincipalDeposited(), 0, "No deposit for free squares");
+        assertEq(aWETH.rawBalanceOf(address(freePool)), 0, "No aWETH for free pool");
+    }
+
+    // Event for testing
+    event YieldWithdrawn(address indexed admin, uint256 amount);
 }

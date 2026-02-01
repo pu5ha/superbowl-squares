@@ -4,7 +4,13 @@ pragma solidity ^0.8.24;
 import {ISquaresPool} from "./interfaces/ISquaresPool.sol";
 import {IERC20} from "./interfaces/IERC20.sol";
 import {IVRFCoordinatorV2Plus, VRFConsumerBaseV2Plus, VRFV2PlusClient} from "./interfaces/IVRFCoordinatorV2Plus.sol";
+import {IPool, IWrappedTokenGatewayV3, IAToken} from "./interfaces/IAaveV3.sol";
 import {SquaresLib} from "./libraries/SquaresLib.sol";
+
+/// @notice Minimal interface for getting admin from factory
+interface ISquaresFactory {
+    function admin() external view returns (address);
+}
 
 /// @title SquaresPool
 /// @notice Super Bowl Squares with Chainlink VRF for randomness and admin score submission
@@ -17,6 +23,12 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
     // ============ Immutables ============
     address public immutable factory;
     address public immutable operator;
+
+    // Aave integration
+    IPool public aavePool;
+    IWrappedTokenGatewayV3 public wethGateway;
+    address public aToken;  // aWETH or aUSDC depending on paymentToken
+    uint256 public totalPrincipalDeposited;  // Track principal separately from totalPot
 
     // ============ Pool Configuration ============
     string public name;
@@ -79,6 +91,9 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
     error InvalidQuarterProgression();
     error InvalidPassword();
     error NoSquaresSold();
+    error GameNotFinished();
+    error NoYieldToWithdraw();
+    error AaveNotConfigured();
 
     // ============ Modifiers ============
     modifier onlyOperator() {
@@ -133,6 +148,17 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
         vrfKeyHash = _keyHash;
     }
 
+    /// @notice Set Aave V3 configuration (called by factory)
+    function setAaveConfig(
+        address _aavePool,
+        address _wethGateway,
+        address _aToken
+    ) external onlyFactory {
+        aavePool = IPool(_aavePool);
+        wethGateway = IWrappedTokenGatewayV3(_wethGateway);
+        aToken = _aToken;
+    }
+
     // ============ Player Functions ============
 
     function buySquares(uint8[] calldata positions, string calldata password) external payable inState(PoolState.OPEN) {
@@ -163,6 +189,11 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
         } else {
             bool success = IERC20(paymentToken).transferFrom(msg.sender, address(this), totalCost);
             if (!success) revert TransferFailed();
+        }
+
+        // Deposit to Aave if configured
+        if (address(aavePool) != address(0)) {
+            _depositToAave(totalCost);
         }
 
         for (uint256 i = 0; i < positions.length; i++) {
@@ -354,6 +385,11 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
             payoutClaimed[winner][quarter] = true;
             unclaimedRolledAmount = 0;
 
+            // Withdraw from Aave if configured
+            if (address(aavePool) != address(0)) {
+                _withdrawFromAave(effectivePayout);
+            }
+
             if (paymentToken == address(0)) {
                 (bool success,) = winner.call{value: effectivePayout}("");
                 if (!success) revert TransferFailed();
@@ -375,6 +411,11 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
             finalDistributionPool = totalToDistribute;
             finalDistributionCalculated = true;
             unclaimedRolledAmount = 0;
+
+            // Withdraw from Aave if configured
+            if (address(aavePool) != address(0)) {
+                _withdrawFromAave(totalToDistribute);
+            }
 
             emit FinalDistributionCalculated(totalToDistribute, squaresSold);
 
@@ -403,6 +444,60 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
         }
 
         emit ScoreSettled(quarter, winner, payout);
+    }
+
+    /// @notice Deposit funds to Aave
+    function _depositToAave(uint256 amount) internal {
+        if (paymentToken == address(0)) {
+            // ETH: deposit via WETHGateway
+            wethGateway.depositETH{value: amount}(address(aavePool), address(this), 0);
+        } else {
+            // ERC20 (USDC): approve and supply to Aave
+            IERC20(paymentToken).approve(address(aavePool), amount);
+            aavePool.supply(paymentToken, amount, address(this), 0);
+        }
+        totalPrincipalDeposited += amount;
+        emit DepositedToAave(amount);
+    }
+
+    /// @notice Withdraw funds from Aave
+    function _withdrawFromAave(uint256 amount) internal {
+        if (paymentToken == address(0)) {
+            // For ETH, we need to approve the aWETH to the gateway first
+            IAToken(aToken).approve(address(wethGateway), amount);
+            wethGateway.withdrawETH(address(aavePool), amount, address(this));
+        } else {
+            aavePool.withdraw(paymentToken, amount, address(this));
+        }
+        totalPrincipalDeposited -= amount;
+        emit WithdrawnFromAave(amount);
+    }
+
+    // ============ Admin Functions ============
+
+    /// @notice Withdraw accrued yield (admin only, after game is finished)
+    function withdrawYield() external {
+        // Only factory admin can withdraw yield
+        require(msg.sender == ISquaresFactory(factory).admin(), "Only admin");
+
+        // Game must be finished
+        if (state != PoolState.FINAL_SCORED) revert GameNotFinished();
+
+        // Must have Aave configured
+        if (address(aavePool) == address(0)) revert AaveNotConfigured();
+
+        uint256 aTokenBalance = IAToken(aToken).balanceOf(address(this));
+        if (aTokenBalance == 0) revert NoYieldToWithdraw();
+
+        // Withdraw all remaining aTokens (yield)
+        if (paymentToken == address(0)) {
+            IAToken(aToken).approve(address(wethGateway), aTokenBalance);
+            wethGateway.withdrawETH(address(aavePool), aTokenBalance, msg.sender);
+        } else {
+            aavePool.withdraw(paymentToken, aTokenBalance, msg.sender);
+        }
+
+        emit YieldWithdrawn(msg.sender, aTokenBalance);
     }
 
     // ============ View Functions ============
@@ -490,6 +585,21 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
         rolledAmount = unclaimedRolledAmount;
         distributionPool = finalDistributionPool;
         distributionReady = finalDistributionCalculated && finalDistributionPool > 0;
+    }
+
+    /// @notice Get Aave yield info
+    function getYieldInfo() external view returns (
+        uint256 principal,
+        uint256 aTokenBalance,
+        uint256 yield,
+        bool aaveConfigured
+    ) {
+        principal = totalPrincipalDeposited;
+        aaveConfigured = address(aavePool) != address(0);
+        if (aaveConfigured && aToken != address(0)) {
+            aTokenBalance = IAToken(aToken).balanceOf(address(this));
+            yield = aTokenBalance > principal ? aTokenBalance - principal : 0;
+        }
     }
 
     // ============ Receive ETH ============

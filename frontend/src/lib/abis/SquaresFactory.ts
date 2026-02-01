@@ -123,6 +123,46 @@ export const SquaresFactoryABI = [
   },
   {
     type: 'function',
+    name: 'aavePool',
+    inputs: [],
+    outputs: [{ type: 'address' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'wethGateway',
+    inputs: [],
+    outputs: [{ type: 'address' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'aWETH',
+    inputs: [],
+    outputs: [{ type: 'address' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'aUSDC',
+    inputs: [],
+    outputs: [{ type: 'address' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'setAaveAddresses',
+    inputs: [
+      { name: '_pool', type: 'address' },
+      { name: '_gateway', type: 'address' },
+      { name: '_aWETH', type: 'address' },
+      { name: '_aUSDC', type: 'address' },
+    ],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  {
+    type: 'function',
     name: 'setVRFSubscription',
     inputs: [{ name: 'subscriptionId', type: 'uint256' }],
     outputs: [],
@@ -277,6 +317,16 @@ export const SquaresFactoryABI = [
     type: 'event',
     name: 'PoolCreationPaused',
     inputs: [{ name: 'paused', type: 'bool', indexed: false }],
+  },
+  {
+    type: 'event',
+    name: 'AaveAddressesUpdated',
+    inputs: [
+      { name: 'pool', type: 'address', indexed: false },
+      { name: 'gateway', type: 'address', indexed: false },
+      { name: 'aWETH', type: 'address', indexed: false },
+      { name: 'aUSDC', type: 'address', indexed: false },
+    ],
   },
   {
     type: 'error',
