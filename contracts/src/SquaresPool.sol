@@ -431,22 +431,22 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
                 for (uint256 i = 0; i < 100; i++) {
                     address owner = grid[i];
                     if (owner != address(0) && !finalDistributionClaimed[owner]) {
-                        finalDistributionClaimed[owner] = true;
-
                         uint256 ownerSquares = userSquareCount[owner];
                         uint256 ownerShare = (actualDistribute * ownerSquares) / squaresSold;
 
+                        bool success;
                         if (paymentToken == address(0)) {
-                            (bool success,) = owner.call{value: ownerShare}("");
-                            if (success) {
-                                emit FinalDistributionClaimed(owner, ownerShare, ownerSquares);
-                            }
+                            (success,) = owner.call{value: ownerShare}("");
                         } else {
-                            bool success = IERC20(paymentToken).transfer(owner, ownerShare);
-                            if (success) {
-                                emit FinalDistributionClaimed(owner, ownerShare, ownerSquares);
-                            }
+                            success = IERC20(paymentToken).transfer(owner, ownerShare);
                         }
+
+                        // Only mark as claimed if transfer succeeded
+                        if (success) {
+                            finalDistributionClaimed[owner] = true;
+                            emit FinalDistributionClaimed(owner, ownerShare, ownerSquares);
+                        }
+                        // If transfer fails, user can still claim later via claimFinalDistribution
                     }
                 }
             }
@@ -531,7 +531,9 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
     /// @dev Used to fix misconfigured aToken addresses
     function setAToken(address _aToken) external {
         require(msg.sender == ISquaresFactory(factory).admin(), "Only admin");
+        address oldAToken = aToken;
         aToken = _aToken;
+        emit ATokenUpdated(oldAToken, _aToken);
     }
 
     /// @notice Internal yield withdrawal implementation

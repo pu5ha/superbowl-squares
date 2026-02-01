@@ -56,6 +56,7 @@ interface ISquaresPool {
     event YieldWithdrawn(address indexed admin, uint256 amount);
     event DepositedToAave(uint256 amount);
     event WithdrawnFromAave(uint256 amount);
+    event ATokenUpdated(address indexed oldAToken, address indexed newAToken);
 
     // Player functions
     function buySquares(uint8[] calldata positions, string calldata password) external payable;
