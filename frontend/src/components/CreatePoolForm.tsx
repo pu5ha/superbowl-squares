@@ -1262,8 +1262,10 @@ function SuccessModal({
   };
 
   const handleShareTwitter = () => {
-    const text = `Join my Super Bowl Squares pool "${poolName}" on Super Bowl Squares! 🏈🏆`;
-    const twitterUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(poolUrl)}`;
+    // Replace dots with " dot " to avoid Twitter algorithm deboosting links
+    const obfuscatedUrl = poolUrl.replace(/\./g, ' dot ');
+    const text = `Join my Super Bowl Squares pool "${poolName}" on Super Bowl Squares! 🏈🏆\n\n${obfuscatedUrl}`;
+    const twitterUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`;
     window.open(twitterUrl, '_blank', 'width=600,height=400');
   };
 

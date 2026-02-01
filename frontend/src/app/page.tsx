@@ -158,7 +158,7 @@ export default function HomePage() {
                   </div>
                   <div>
                     <h3 className="text-[var(--chrome)] font-bold mb-1">Numbers Are Randomly Assigned</h3>
-                    <p>After all squares are sold, random numbers 0-9 are assigned to each team's axis using a secure commit-reveal scheme. This keeps it fair - no one knows which numbers they'll get when buying.</p>
+                    <p>After all squares are sold, random numbers 0-9 are assigned to each team's axis using Chainlink VRF (Verifiable Random Function). This keeps it fair - no one knows which numbers they'll get when buying.</p>
                   </div>
                 </div>
 
@@ -200,13 +200,13 @@ export default function HomePage() {
             <FeatureCard
               icon={<DiceIcon />}
               title="Provably Fair"
-              description="Random number assignment uses a secure commit-reveal scheme that ensures truly random and verifiable results. No more suspicious organizers."
+              description="Random number assignment uses Chainlink VRF (Verifiable Random Function) to ensure truly random and cryptographically verifiable results."
               delay={100}
             />
             <FeatureCard
               icon={<OracleIcon />}
               title="Transparent Scoring"
-              description="Pool operators submit verified scores on-chain. All transactions are publicly auditable and immutably recorded on Ethereum."
+              description="Game scores are submitted onchain by a trusted admin. All transactions are publicly auditable and immutably recorded on the blockchain."
               delay={200}
             />
             <FeatureCard
@@ -247,19 +247,19 @@ export default function HomePage() {
             <Step
               number={2}
               title="Random Numbers"
-              description="After the pool closes, the operator reveals the randomness to assign 0-9 numbers to rows and columns."
+              description="Once the pool closes, Chainlink VRF generates verifiable random numbers to assign 0-9 to rows and columns."
               delay={200}
             />
             <Step
               number={3}
               title="Watch & Score"
-              description="During the game, the pool operator submits scores on-chain after each quarter ends."
+              description="During the game, scores are submitted onchain after each quarter ends."
               delay={300}
             />
             <Step
               number={4}
-              title="Claim Winnings"
-              description="If your square matches the last digit of each team's score, claim your payout!"
+              title="Get Paid"
+              description="If your square matches the last digit of each team's score, winnings are automatically sent to your wallet!"
               delay={400}
             />
           </div>
@@ -292,7 +292,7 @@ export default function HomePage() {
                   <PayoutCard quarter="Final" percentage={40} color="gold" />
                 </div>
 
-                <div className="mt-8">
+                <div className="mt-8 text-center">
                   <Link href="/pools/create" className="btn-primary">
                     Create Your Pool
                   </Link>

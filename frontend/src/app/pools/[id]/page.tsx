@@ -1204,8 +1204,10 @@ export default function PoolPage() {
                 <button
                   onClick={() => {
                     const url = typeof window !== 'undefined' ? window.location.href : '';
-                    const text = `Join my Super Bowl Squares pool "${poolInfo?.name || 'Pool'}" 🏈🏆`;
-                    const twitterUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(url)}`;
+                    // Replace dots with " dot " to avoid Twitter algorithm deboosting links
+                    const obfuscatedUrl = url.replace(/\./g, ' dot ');
+                    const text = `Join my Super Bowl Squares pool "${poolInfo?.name || 'Pool'}" 🏈🏆\n\n${obfuscatedUrl}`;
+                    const twitterUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`;
                     window.open(twitterUrl, '_blank', 'width=600,height=400');
                   }}
                   className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-[#1DA1F2]/20 border border-[#1DA1F2]/50 hover:bg-[#1DA1F2]/30 transition-colors text-sm text-[#1DA1F2]"
@@ -1843,7 +1845,9 @@ function PurchaseSuccessModal({
   const shareText = `Just grabbed ${squareCount} square${squareCount > 1 ? 's' : ''} in "${poolName}"! Who's ready for Super Bowl LX? 🏈🏆`;
 
   const handleShareTwitter = () => {
-    const twitterUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}&url=${encodeURIComponent(poolUrl)}`;
+    // Replace dots with " dot " to avoid Twitter algorithm deboosting links
+    const obfuscatedUrl = poolUrl.replace(/\./g, ' dot ');
+    const twitterUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText + '\n\n' + obfuscatedUrl)}`;
     window.open(twitterUrl, '_blank', 'width=600,height=400');
   };
 
