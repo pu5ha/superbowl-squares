@@ -61,6 +61,7 @@ interface ISquaresPool {
     // Player functions
     function buySquares(uint8[] calldata positions, string calldata password) external payable;
     function claimPayout(Quarter quarter) external;
+    function claimFinalDistribution() external;
 
     // VRF functions
     function closePoolAndRequestVRFFromFactory() external;

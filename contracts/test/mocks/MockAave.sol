@@ -87,6 +87,9 @@ contract MockAavePool is IPool {
     }
 
     function supply(address asset, uint256 amount, address onBehalfOf, uint16 /* referralCode */) external {
+        // Real Aave reverts on zero amount
+        require(amount > 0, "INVALID_AMOUNT");
+
         // Transfer underlying from sender
         (bool success,) = asset.call(
             abi.encodeWithSignature("transferFrom(address,address,uint256)", msg.sender, address(this), amount)
@@ -121,6 +124,9 @@ contract MockWETHGateway is IWrappedTokenGatewayV3 {
     }
 
     function depositETH(address /* pool */, address onBehalfOf, uint16 /* referralCode */) external payable {
+        // Real Aave WETH Gateway reverts on zero amount
+        require(msg.value > 0, "INVALID_AMOUNT");
+
         // Mint aWETH to onBehalfOf
         aWETH.mint(onBehalfOf, msg.value);
     }

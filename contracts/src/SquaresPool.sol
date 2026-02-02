@@ -19,6 +19,7 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
     uint16 private constant VRF_REQUEST_CONFIRMATIONS = 3;
     uint32 private constant VRF_NUM_WORDS = 1;
     uint32 private constant VRF_CALLBACK_GAS_LIMIT = 500000;
+    uint256 private constant ETH_TRANSFER_GAS_LIMIT = 50000;
 
     // ============ Immutables ============
     address public immutable factory;
@@ -94,6 +95,9 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
     error GameNotFinished();
     error NoYieldToWithdraw();
     error AaveNotConfigured();
+    error FinalDistributionNotReady();
+    error NoSquaresOwned();
+    error InvalidQuarter();
 
     // ============ Modifiers ============
     modifier onlyOperator() {
@@ -183,7 +187,7 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
         if (paymentToken == address(0)) {
             if (msg.value < totalCost) revert InsufficientPayment(msg.value, totalCost);
             if (msg.value > totalCost) {
-                (bool success,) = msg.sender.call{value: msg.value - totalCost}("");
+                (bool success,) = msg.sender.call{value: msg.value - totalCost, gas: ETH_TRANSFER_GAS_LIMIT}("");
                 if (!success) revert TransferFailed();
             }
         } else {
@@ -191,8 +195,8 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
             if (!success) revert TransferFailed();
         }
 
-        // Deposit to Aave if configured
-        if (address(aavePool) != address(0)) {
+        // Deposit to Aave if configured and amount > 0
+        if (address(aavePool) != address(0) && totalCost > 0) {
             _depositToAave(totalCost);
         }
 
@@ -220,19 +224,45 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
         (address winner, uint256 payout) = getWinner(quarter);
         if (msg.sender != winner) revert NotWinner();
 
-        payoutClaimed[msg.sender][quarter] = true;
-
+        bool success;
         if (paymentToken == address(0)) {
-            (bool success,) = msg.sender.call{value: payout}("");
-            if (!success) revert TransferFailed();
+            (success,) = msg.sender.call{value: payout, gas: ETH_TRANSFER_GAS_LIMIT}("");
         } else {
-            bool success = IERC20(paymentToken).transfer(msg.sender, payout);
-            if (!success) revert TransferFailed();
+            success = IERC20(paymentToken).transfer(msg.sender, payout);
         }
 
-        emit PayoutClaimed(msg.sender, quarter, payout);
+        // Only mark as claimed if transfer succeeded
+        // Malicious contracts that revert on receive won't be able to claim,
+        // but this prevents them from blocking other users
+        if (success) {
+            payoutClaimed[msg.sender][quarter] = true;
+            emit PayoutClaimed(msg.sender, quarter, payout);
+        }
+        // If transfer fails, caller can try again later (e.g., after upgrading their contract)
     }
 
+    /// @notice Claim final distribution share (fallback if auto-distribution failed)
+    /// @dev Only callable after final score is submitted and distribution is calculated
+    function claimFinalDistribution() external {
+        if (!finalDistributionCalculated) revert FinalDistributionNotReady();
+        if (finalDistributionClaimed[msg.sender]) revert PayoutAlreadyClaimed();
+        if (userSquareCount[msg.sender] == 0) revert NoSquaresOwned();
+
+        uint256 share = (finalDistributionPool * userSquareCount[msg.sender]) / squaresSold;
+
+        bool success;
+        if (paymentToken == address(0)) {
+            (success,) = msg.sender.call{value: share, gas: ETH_TRANSFER_GAS_LIMIT}("");
+        } else {
+            success = IERC20(paymentToken).transfer(msg.sender, share);
+        }
+
+        if (success) {
+            finalDistributionClaimed[msg.sender] = true;
+            emit FinalDistributionClaimed(msg.sender, share, userSquareCount[msg.sender]);
+        }
+        // If transfer fails, caller can try again later (e.g., after upgrading their contract)
+    }
 
     // ============ VRF Trigger Functions ============
 
@@ -298,6 +328,9 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
         uint8 teamAScore,
         uint8 teamBScore
     ) external onlyFactory {
+        // Validate quarter is in range (0-3)
+        if (quarter > 3) revert InvalidQuarter();
+
         // Validate state - must have numbers assigned
         if (state < PoolState.NUMBERS_ASSIGNED) revert InvalidState(state, PoolState.NUMBERS_ASSIGNED);
 
@@ -332,6 +365,9 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
 
     /// @notice Operator can manually submit scores (fallback)
     function submitScore(Quarter quarter, uint8 teamAScore, uint8 teamBScore) external {
+        // Validate quarter is in range (0-3)
+        if (uint8(quarter) > 3) revert InvalidQuarter();
+
         // Only operator can manually submit (fallback if APIs fail)
         if (msg.sender != operator) revert OnlyOperator();
         _validateQuarterProgression(quarter);
@@ -382,7 +418,7 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
 
         if (winner != address(0) && effectivePayout > 0) {
             // Winner exists - pay them base payout + any rolled amount
-            payoutClaimed[winner][quarter] = true;
+            // Clear rolled amount first (state advances regardless of transfer success)
             unclaimedRolledAmount = 0;
 
             // Determine actual payout amount
@@ -395,16 +431,22 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
 
             // Only transfer if we have funds
             if (actualPayout > 0) {
+                bool success;
                 if (paymentToken == address(0)) {
-                    (bool success,) = winner.call{value: actualPayout}("");
-                    if (!success) revert TransferFailed();
+                    (success,) = winner.call{value: actualPayout, gas: ETH_TRANSFER_GAS_LIMIT}("");
                 } else {
-                    bool success = IERC20(paymentToken).transfer(winner, actualPayout);
-                    if (!success) revert TransferFailed();
+                    success = IERC20(paymentToken).transfer(winner, actualPayout);
                 }
-            }
 
-            emit PayoutClaimed(winner, quarter, actualPayout);
+                // Only mark as claimed if transfer succeeded
+                // If transfer fails, winner can call claimPayout() later
+                if (success) {
+                    payoutClaimed[winner][quarter] = true;
+                    emit PayoutClaimed(winner, quarter, actualPayout);
+                }
+                // Note: If transfer fails (e.g., malicious contract), state still advances
+                // and winner can attempt to claim later via claimPayout()
+            }
         } else if (payout > 0) {
             // No winner - roll this quarter's payout forward
             unclaimedRolledAmount += payout;
@@ -422,6 +464,8 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
             uint256 actualDistribute = totalToDistribute;
             if (address(aavePool) != address(0)) {
                 actualDistribute = _withdrawFromAave(totalToDistribute);
+                // Update to actual amount for accurate view functions
+                finalDistributionPool = actualDistribute;
             }
 
             emit FinalDistributionCalculated(actualDistribute, squaresSold);
@@ -436,7 +480,7 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
 
                         bool success;
                         if (paymentToken == address(0)) {
-                            (success,) = owner.call{value: ownerShare}("");
+                            (success,) = owner.call{value: ownerShare, gas: ETH_TRANSFER_GAS_LIMIT}("");
                         } else {
                             success = IERC20(paymentToken).transfer(owner, ownerShare);
                         }
@@ -531,7 +575,9 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
     }
 
     /// @notice Emergency function to recover stuck ERC20 tokens (admin only)
-    /// @dev Used to recover aTokens when wrong aToken address was configured
+    /// @notice Emergency recovery for stuck ERC20 tokens (admin only, after game ends)
+    /// @dev Used to recover aTokens when wrong aToken address was configured.
+    ///      Can only be called after FINAL_SCORED state to prevent mid-game extraction.
     /// @param token The ERC20 token to recover
     /// @param amount Amount to recover (use type(uint256).max for full balance)
     function emergencyRecoverToken(address token, uint256 amount) external {
@@ -556,6 +602,24 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
         emit ATokenUpdated(oldAToken, _aToken);
     }
 
+    /// @notice Emergency function to recover stuck native ETH (admin only)
+    /// @notice Emergency recovery for stuck native ETH (admin only, after game ends)
+    /// @dev Used to recover ETH from failed transfers or rounding dust.
+    ///      Can only be called after FINAL_SCORED state to prevent mid-game extraction.
+    /// @param amount Amount to recover (use type(uint256).max for full balance)
+    function emergencyRecoverETH(uint256 amount) external {
+        require(msg.sender == ISquaresFactory(factory).admin(), "Only admin");
+        require(state == PoolState.FINAL_SCORED, "Game not finished");
+
+        uint256 balance = address(this).balance;
+        uint256 toRecover = amount == type(uint256).max ? balance : amount;
+        require(toRecover <= balance, "Insufficient balance");
+
+        address admin = ISquaresFactory(factory).admin();
+        (bool success,) = admin.call{value: toRecover}("");
+        require(success, "Transfer failed");
+    }
+
     /// @notice Internal yield withdrawal implementation
     function _withdrawYieldToAdmin() internal {
         address admin = ISquaresFactory(factory).admin();
@@ -576,6 +640,9 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
         } else {
             aavePool.withdraw(paymentToken, aTokenBalance, admin);
         }
+
+        // Clear principal tracking for clean accounting in getYieldInfo
+        totalPrincipalDeposited = 0;
 
         emit YieldWithdrawn(admin, aTokenBalance);
     }

@@ -17,6 +17,7 @@ contract SquaresFactory {
         address paymentToken
     );
     event VRFTriggeredForAllPools(uint256 poolsTriggered);
+    event VRFTriggeredForPool(address indexed pool);
     event CreationFeeUpdated(uint256 oldFee, uint256 newFee);
     event FeesWithdrawn(address indexed to, uint256 amount);
     event AdminTransferred(address indexed oldAdmin, address indexed newAdmin);
@@ -26,8 +27,9 @@ contract SquaresFactory {
     event VRFSubscriptionFunded(uint256 indexed subscriptionId, uint256 amount);
     event VRFSubscriptionCancelled(uint256 indexed subscriptionId, address indexed fundsRecipient);
     event ScoreSubmittedToAllPools(uint8 indexed quarter, uint8 teamAScore, uint8 teamBScore);
+    event ScoreSubmittedToPool(address indexed pool, uint8 indexed quarter, uint8 teamAScore, uint8 teamBScore);
     event PoolCreationPaused(bool paused);
-    event AaveAddressesUpdated(address pool, address gateway, address aWETH, address aUSDC);
+    event AaveAddressesUpdated(address pool, address gateway, address aWETH, address aUSDC, address usdc);
     event YieldWithdrawnFromAllPools(uint256 poolsWithdrawn);
     event EmergencyNumbersSetForAllPools(uint256 poolsSet);
 
@@ -63,6 +65,7 @@ contract SquaresFactory {
     address public wethGateway;
     address public aWETH;
     address public aUSDC;
+    address public usdc; // Underlying USDC token address (for payment token validation)
 
     // ============ Errors ============
     error OnlyAdmin();
@@ -72,6 +75,7 @@ contract SquaresFactory {
     error InvalidAddress();
     error PoolCreationIsPaused();
     error PoolNameAlreadyExists(string name);
+    error UnsupportedPaymentToken(address token);
 
     // ============ Modifiers ============
     modifier onlyAdmin() {
@@ -177,17 +181,20 @@ contract SquaresFactory {
     /// @param _gateway WETH Gateway contract address
     /// @param _aWETH aWETH token address
     /// @param _aUSDC aUSDC token address
+    /// @param _usdc Underlying USDC token address (for payment token validation)
     function setAaveAddresses(
         address _pool,
         address _gateway,
         address _aWETH,
-        address _aUSDC
+        address _aUSDC,
+        address _usdc
     ) external onlyAdmin {
         aavePool = _pool;
         wethGateway = _gateway;
         aWETH = _aWETH;
         aUSDC = _aUSDC;
-        emit AaveAddressesUpdated(_pool, _gateway, _aWETH, _aUSDC);
+        usdc = _usdc;
+        emit AaveAddressesUpdated(_pool, _gateway, _aWETH, _aUSDC, _usdc);
     }
 
     /// @notice Withdraw yield from all finished pools in a single transaction
@@ -275,7 +282,8 @@ contract SquaresFactory {
         uint256 poolCount = allPools.length;
         for (uint256 i = 0; i < poolCount; i++) {
             // Generate unique randomness for each pool
-            uint256 poolRandomness = uint256(keccak256(abi.encodePacked(randomSeed, i, block.timestamp)));
+            // Note: randomSeed should be generated securely off-chain (e.g., from a trusted random source)
+            uint256 poolRandomness = uint256(keccak256(abi.encodePacked(randomSeed, i)));
             try SquaresPool(payable(allPools[i])).emergencySetNumbers(poolRandomness) {
                 poolsSet++;
             } catch {
@@ -286,6 +294,35 @@ contract SquaresFactory {
         emit EmergencyNumbersSetForAllPools(poolsSet);
     }
 
+    // ============ Per-Pool Admin Functions ============
+    // These provide fallbacks when batch operations exceed gas limits
+
+    /// @notice Trigger VRF for a specific pool
+    /// @dev Use this when triggerVRFForAllPools() exceeds gas limit
+    /// @param pool Address of the pool to close and trigger VRF for
+    function triggerVRFForPool(address pool) external {
+        if (msg.sender != scoreAdmin && msg.sender != admin) revert Unauthorized();
+        SquaresPool(payable(pool)).closePoolAndRequestVRFFromFactory();
+        emit VRFTriggeredForPool(pool);
+    }
+
+    /// @notice Submit score to a specific pool
+    /// @dev Use this when submitScoreToAllPools() exceeds gas limit
+    /// @param pool Address of the pool to submit score to
+    /// @param quarter The quarter to submit (0=Q1, 1=Q2, 2=Q3, 3=Final)
+    /// @param teamAScore Team A's score
+    /// @param teamBScore Team B's score
+    function submitScoreToPool(
+        address pool,
+        uint8 quarter,
+        uint8 teamAScore,
+        uint8 teamBScore
+    ) external {
+        if (msg.sender != scoreAdmin && msg.sender != admin) revert Unauthorized();
+        SquaresPool(payable(pool)).submitScoreFromFactory(quarter, teamAScore, teamBScore);
+        emit ScoreSubmittedToPool(pool, quarter, teamAScore, teamBScore);
+    }
+
     // ============ Factory Functions ============
 
     /// @notice Create a new Super Bowl Squares pool
@@ -293,6 +330,12 @@ contract SquaresFactory {
     /// @return pool Address of the newly created pool contract
     function createPool(ISquaresPool.PoolParams calldata params) external payable returns (address pool) {
         if (poolCreationPaused) revert PoolCreationIsPaused();
+
+        // Validate payment token - only ETH (address(0)) or USDC are supported
+        // This prevents aToken mismatch when Aave is enabled
+        if (params.paymentToken != address(0) && params.paymentToken != usdc) {
+            revert UnsupportedPaymentToken(params.paymentToken);
+        }
 
         // Check for duplicate pool name
         bytes32 nameHash = keccak256(bytes(params.name));
@@ -371,10 +414,9 @@ contract SquaresFactory {
             return (new address[](0), total);
         }
 
-        uint256 end = offset + limit;
-        if (end > total) {
-            end = total;
-        }
+        // Compute end safely to avoid overflow when limit is very large
+        uint256 remaining = total - offset;
+        uint256 end = remaining < limit ? total : offset + limit;
 
         pools = new address[](end - offset);
         for (uint256 i = offset; i < end; i++) {

@@ -25,6 +25,9 @@ contract SquaresPoolTest is Test {
     uint256 public constant CREATION_FEE = 0.1 ether;
     uint256 public constant TOTAL_REQUIRED = CREATION_FEE + VRF_FUNDING_AMOUNT;
 
+    // Allow test contract to receive ETH (admin receives ETH from emergency recovery)
+    receive() external payable {}
+
     function setUp() public {
         // Deploy mocks
         vrfCoordinator = new MockVRFCoordinatorV2Plus();
@@ -39,6 +42,15 @@ contract SquaresPoolTest is Test {
 
         // Set VRF funding amount
         factory.setVRFFundingAmount(VRF_FUNDING_AMOUNT);
+
+        // Configure supported payment tokens (ETH is always allowed, paymentToken acts as "USDC" for tests)
+        factory.setAaveAddresses(
+            address(0), // aavePool (not needed for these tests)
+            address(0), // wethGateway
+            address(0), // aWETH
+            address(0), // aUSDC
+            address(paymentToken) // usdc - this allows paymentToken to be used for ERC20 pools
+        );
 
         // Create pool with ETH payments
         ISquaresPool.PoolParams memory params = ISquaresPool.PoolParams({
@@ -1851,6 +1863,548 @@ contract SquaresPoolTest is Test {
         assertEq(alice.balance - aliceBalanceBefore, 1 ether, "Alice gets 1 ETH");
         assertEq(bob.balance - bobBalanceBefore, 4 ether, "Bob gets 4 ETH");
     }
+
+    // ============ claimFinalDistribution Tests ============
+
+    function test_ClaimFinalDistribution_Success() public {
+        // Setup: Create pool where auto-distribution will fail for a fixable contract
+        // but the contract can claim via the pull function after being fixed
+        uint256 randomness = 12345;
+        uint8 winningPos = _calculateWinningPositionForZeroScore(randomness);
+
+        ISquaresPool.PoolParams memory params = ISquaresPool.PoolParams({
+            name: "Claim Final Dist Pool",
+            squarePrice: SQUARE_PRICE,
+            paymentToken: address(0),
+            maxSquaresPerUser: 0,
+            payoutPercentages: [uint8(20), uint8(20), uint8(20), uint8(40)],
+            teamAName: "TeamA",
+            teamBName: "TeamB",
+            purchaseDeadline: block.timestamp + 7 days,
+            vrfTriggerTime: block.timestamp + 8 days,
+            passwordHash: bytes32(0)
+        });
+
+        vm.prank(operator);
+        address poolAddr = factory.createPool{value: TOTAL_REQUIRED}(params);
+        SquaresPool testPool = SquaresPool(payable(poolAddr));
+
+        // Deploy fixable receiver that starts broken
+        FixableReceiver fixable = new FixableReceiver();
+        vm.deal(address(fixable), 100 ether);
+        fixable.setAcceptETH(false);
+
+        // Fixable buys 20 squares while "broken"
+        uint8[] memory fixablePositions = new uint8[](20);
+        uint8 idx = 0;
+        for (uint8 i = 10; i < 50 && idx < 20; i++) {
+            if (i != winningPos) {
+                fixablePositions[idx] = i;
+                idx++;
+            }
+        }
+        vm.prank(address(fixable));
+        testPool.buySquares{value: 2 ether}(fixablePositions, "");
+
+        // Trigger VRF and submit scores
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(testPool.vrfRequestId(), randomness);
+
+        vm.startPrank(operator);
+        testPool.submitScore(ISquaresPool.Quarter.Q1, 0, 0);
+        testPool.submitScore(ISquaresPool.Quarter.Q2, 0, 0);
+        testPool.submitScore(ISquaresPool.Quarter.Q3, 0, 0);
+        testPool.submitScore(ISquaresPool.Quarter.FINAL, 0, 0);
+        vm.stopPrank();
+
+        // Auto-distribution failed because fixable was broken
+        (, bool fixableClaimed) = testPool.getFinalDistributionShare(address(fixable));
+        assertFalse(fixableClaimed, "Fixable should not be auto-claimed while broken");
+
+        // Now fix the receiver and claim manually
+        fixable.setAcceptETH(true);
+        uint256 fixableBalanceBefore = address(fixable).balance;
+
+        vm.prank(address(fixable));
+        testPool.claimFinalDistribution();
+
+        // Verify claim succeeded
+        (, fixableClaimed) = testPool.getFinalDistributionShare(address(fixable));
+        assertTrue(fixableClaimed, "Fixable should now be claimed");
+        assertGt(address(fixable).balance, fixableBalanceBefore, "Fixable should have received ETH");
+    }
+
+    function test_ClaimFinalDistribution_RevertIfNotReady() public {
+        // Setup pool but don't complete the game
+        uint8[] memory positions = new uint8[](1);
+        positions[0] = 50;
+
+        vm.prank(alice);
+        pool.buySquares{value: SQUARE_PRICE}(positions, "");
+
+        // Try to claim before final distribution is calculated
+        vm.prank(alice);
+        vm.expectRevert(SquaresPool.FinalDistributionNotReady.selector);
+        pool.claimFinalDistribution();
+    }
+
+    function test_ClaimFinalDistribution_RevertIfAlreadyClaimed() public {
+        _setupPoolForFinalDistribution();
+
+        // Submit all quarters with no winner to trigger final distribution
+        vm.startPrank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q1, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.Q2, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.Q3, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.FINAL, 0, 0);
+        vm.stopPrank();
+
+        // Alice was auto-claimed during settlement
+        (, bool aliceClaimed) = pool.getFinalDistributionShare(alice);
+        assertTrue(aliceClaimed, "Alice should be auto-claimed");
+
+        // Alice tries to claim again
+        vm.prank(alice);
+        vm.expectRevert(SquaresPool.PayoutAlreadyClaimed.selector);
+        pool.claimFinalDistribution();
+    }
+
+    function test_ClaimFinalDistribution_RevertIfNoSquares() public {
+        _setupPoolForFinalDistribution();
+
+        // Submit all quarters with no winner
+        vm.startPrank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q1, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.Q2, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.Q3, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.FINAL, 0, 0);
+        vm.stopPrank();
+
+        // Charlie didn't buy any squares
+        vm.prank(charlie);
+        vm.expectRevert(SquaresPool.NoSquaresOwned.selector);
+        pool.claimFinalDistribution();
+    }
+
+    function test_ClaimFinalDistribution_CorrectShareCalculation() public {
+        // Test that share calculation is correct: 80% of pot for 80 squares out of 100
+        uint256 randomness = 12345;
+        uint8 winningPos = _calculateWinningPositionForZeroScore(randomness);
+
+        ISquaresPool.PoolParams memory params = ISquaresPool.PoolParams({
+            name: "Share Calc Pool",
+            squarePrice: 1 ether, // 1 ETH per square for easy math
+            paymentToken: address(0),
+            maxSquaresPerUser: 0,
+            payoutPercentages: [uint8(20), uint8(20), uint8(20), uint8(40)],
+            teamAName: "TeamA",
+            teamBName: "TeamB",
+            purchaseDeadline: block.timestamp + 7 days,
+            vrfTriggerTime: block.timestamp + 8 days,
+            passwordHash: bytes32(0)
+        });
+
+        vm.prank(operator);
+        address poolAddr = factory.createPool{value: TOTAL_REQUIRED}(params);
+        SquaresPool testPool = SquaresPool(payable(poolAddr));
+
+        // Fixable Bob buys 80 squares (80 ETH) while "broken" - buy first to avoid conflicts
+        FixableReceiver fixableBob = new FixableReceiver();
+        vm.deal(address(fixableBob), 100 ether);
+        fixableBob.setAcceptETH(false);
+
+        uint8[] memory bobPositions = new uint8[](80);
+        uint8 idx = 0;
+        for (uint8 i = 0; i < 100 && idx < 80; i++) {
+            if (i != winningPos) {
+                bobPositions[idx] = i;
+                idx++;
+            }
+        }
+        vm.prank(address(fixableBob));
+        testPool.buySquares{value: 80 ether}(bobPositions, "");
+
+        // Alice buys remaining 19 squares (avoiding winning position)
+        uint8[] memory alicePositions = new uint8[](19);
+        idx = 0;
+        for (uint8 i = 0; i < 100 && idx < 19; i++) {
+            if (i != winningPos && testPool.grid(i) == address(0)) {
+                alicePositions[idx] = i;
+                idx++;
+            }
+        }
+        vm.prank(alice);
+        testPool.buySquares{value: 19 ether}(alicePositions, "");
+
+        // Total pot: 99 ETH, 99 squares sold (winning position unsold)
+        // Alice: 19 squares, Bob: 80 squares
+
+        // Trigger VRF
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(testPool.vrfRequestId(), randomness);
+
+        // Submit all quarters with no winner
+        vm.startPrank(operator);
+        testPool.submitScore(ISquaresPool.Quarter.Q1, 0, 0);
+        testPool.submitScore(ISquaresPool.Quarter.Q2, 0, 0);
+        testPool.submitScore(ISquaresPool.Quarter.Q3, 0, 0);
+        testPool.submitScore(ISquaresPool.Quarter.FINAL, 0, 0);
+        vm.stopPrank();
+
+        // Alice auto-claimed, Bob failed
+        (, bool aliceClaimed) = testPool.getFinalDistributionShare(alice);
+        (, bool bobClaimed) = testPool.getFinalDistributionShare(address(fixableBob));
+        assertTrue(aliceClaimed, "Alice should be auto-claimed");
+        assertFalse(bobClaimed, "Bob should not be auto-claimed");
+
+        // Fix Bob and claim
+        fixableBob.setAcceptETH(true);
+        uint256 bobBalanceBefore = address(fixableBob).balance;
+
+        vm.prank(address(fixableBob));
+        testPool.claimFinalDistribution();
+
+        uint256 bobReceived = address(fixableBob).balance - bobBalanceBefore;
+
+        // Bob should receive 80/99 of the 99 ETH pot
+        uint256 expectedBobShare = (99 ether * 80) / 99;
+        assertEq(bobReceived, expectedBobShare, "Bob should receive his share of pot");
+    }
+
+    function test_ClaimFinalDistribution_WithERC20() public {
+        // Test with ERC20 token
+        uint256 randomness = 12345;
+        uint8 winningPos = _calculateWinningPositionForZeroScore(randomness);
+
+        ISquaresPool.PoolParams memory params = ISquaresPool.PoolParams({
+            name: "ERC20 Claim Pool",
+            squarePrice: 100e18,
+            paymentToken: address(paymentToken),
+            maxSquaresPerUser: 0,
+            payoutPercentages: [uint8(20), uint8(20), uint8(20), uint8(40)],
+            teamAName: "TeamA",
+            teamBName: "TeamB",
+            purchaseDeadline: block.timestamp + 7 days,
+            vrfTriggerTime: block.timestamp + 8 days,
+            passwordHash: bytes32(0)
+        });
+
+        vm.prank(operator);
+        address poolAddr = factory.createPool{value: TOTAL_REQUIRED}(params);
+        SquaresPool testPool = SquaresPool(payable(poolAddr));
+
+        // Mint tokens for alice
+        paymentToken.mint(alice, 10000e18);
+        vm.prank(alice);
+        paymentToken.approve(address(testPool), type(uint256).max);
+
+        // Alice buys 20 squares
+        uint8[] memory positions = new uint8[](20);
+        uint8 idx = 0;
+        for (uint8 i = 10; i < 50 && idx < 20; i++) {
+            if (i != winningPos) {
+                positions[idx] = i;
+                idx++;
+            }
+        }
+        vm.prank(alice);
+        testPool.buySquares(positions, "");
+
+        // Trigger VRF
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(testPool.vrfRequestId(), randomness);
+
+        // Submit all quarters with no winner
+        vm.startPrank(operator);
+        testPool.submitScore(ISquaresPool.Quarter.Q1, 0, 0);
+        testPool.submitScore(ISquaresPool.Quarter.Q2, 0, 0);
+        testPool.submitScore(ISquaresPool.Quarter.Q3, 0, 0);
+        testPool.submitScore(ISquaresPool.Quarter.FINAL, 0, 0);
+        vm.stopPrank();
+
+        // Alice should have been auto-claimed
+        (, bool claimed) = testPool.getFinalDistributionShare(alice);
+        assertTrue(claimed, "Alice should be claimed");
+
+        // Verify Alice received tokens (she was the only participant, so gets all back)
+        uint256 aliceBalance = paymentToken.balanceOf(alice);
+        assertEq(aliceBalance, 10000e18, "Alice should have all tokens back");
+    }
+
+    function test_ClaimFinalDistribution_TransferFailsNoStateChange() public {
+        // Test that if transfer fails, state doesn't change and user can retry
+        uint256 randomness = 12345;
+        uint8 winningPos = _calculateWinningPositionForZeroScore(randomness);
+
+        ISquaresPool.PoolParams memory params = ISquaresPool.PoolParams({
+            name: "Retry Pool",
+            squarePrice: SQUARE_PRICE,
+            paymentToken: address(0),
+            maxSquaresPerUser: 0,
+            payoutPercentages: [uint8(20), uint8(20), uint8(20), uint8(40)],
+            teamAName: "TeamA",
+            teamBName: "TeamB",
+            purchaseDeadline: block.timestamp + 7 days,
+            vrfTriggerTime: block.timestamp + 8 days,
+            passwordHash: bytes32(0)
+        });
+
+        vm.prank(operator);
+        address poolAddr = factory.createPool{value: TOTAL_REQUIRED}(params);
+        SquaresPool testPool = SquaresPool(payable(poolAddr));
+
+        // Deploy fixable receiver
+        FixableReceiver fixable = new FixableReceiver();
+        vm.deal(address(fixable), 100 ether);
+        fixable.setAcceptETH(false);
+
+        // Fixable buys squares
+        uint8[] memory positions = new uint8[](20);
+        uint8 idx = 0;
+        for (uint8 i = 10; i < 50 && idx < 20; i++) {
+            if (i != winningPos) {
+                positions[idx] = i;
+                idx++;
+            }
+        }
+        vm.prank(address(fixable));
+        testPool.buySquares{value: 2 ether}(positions, "");
+
+        // Trigger VRF and complete game
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(testPool.vrfRequestId(), randomness);
+
+        vm.startPrank(operator);
+        testPool.submitScore(ISquaresPool.Quarter.Q1, 0, 0);
+        testPool.submitScore(ISquaresPool.Quarter.Q2, 0, 0);
+        testPool.submitScore(ISquaresPool.Quarter.Q3, 0, 0);
+        testPool.submitScore(ISquaresPool.Quarter.FINAL, 0, 0);
+        vm.stopPrank();
+
+        // Auto-distribution failed
+        (, bool claimed) = testPool.getFinalDistributionShare(address(fixable));
+        assertFalse(claimed, "Should not be claimed yet");
+
+        // Try to claim while still broken - should not revert but also not mark claimed
+        vm.prank(address(fixable));
+        testPool.claimFinalDistribution();
+
+        (, claimed) = testPool.getFinalDistributionShare(address(fixable));
+        assertFalse(claimed, "Should still not be claimed after failed attempt");
+
+        // Fix and retry
+        fixable.setAcceptETH(true);
+        uint256 balanceBefore = address(fixable).balance;
+
+        vm.prank(address(fixable));
+        testPool.claimFinalDistribution();
+
+        (, claimed) = testPool.getFinalDistributionShare(address(fixable));
+        assertTrue(claimed, "Should be claimed after successful retry");
+        assertGt(address(fixable).balance, balanceBefore, "Should have received ETH");
+    }
+
+    function test_ClaimFinalDistribution_NoDistributionIfAllQuartersHaveWinners() public {
+        // If all quarters have winners, there's no final distribution
+        // This tests that claimFinalDistribution correctly handles this edge case
+
+        // Create a new pool with no max limit
+        ISquaresPool.PoolParams memory params = ISquaresPool.PoolParams({
+            name: "All Winners Pool",
+            squarePrice: SQUARE_PRICE,
+            paymentToken: address(0),
+            maxSquaresPerUser: 0, // No limit
+            payoutPercentages: [uint8(20), uint8(20), uint8(20), uint8(40)],
+            teamAName: "TeamA",
+            teamBName: "TeamB",
+            purchaseDeadline: block.timestamp + 7 days,
+            vrfTriggerTime: block.timestamp + 8 days,
+            passwordHash: bytes32(0)
+        });
+
+        vm.prank(operator);
+        address poolAddr = factory.createPool{value: TOTAL_REQUIRED}(params);
+        SquaresPool testPool = SquaresPool(payable(poolAddr));
+
+        // Buy all squares so every quarter has a winner
+        uint8[] memory positions = new uint8[](100);
+        for (uint8 i = 0; i < 100; i++) {
+            positions[i] = i;
+        }
+        vm.prank(alice);
+        testPool.buySquares{value: 10 ether}(positions, "");
+
+        // Trigger VRF
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(testPool.vrfRequestId(), 12345);
+
+        // Submit all quarters - alice wins all
+        vm.startPrank(operator);
+        testPool.submitScore(ISquaresPool.Quarter.Q1, 7, 3);
+        testPool.submitScore(ISquaresPool.Quarter.Q2, 14, 7);
+        testPool.submitScore(ISquaresPool.Quarter.Q3, 21, 10);
+        testPool.submitScore(ISquaresPool.Quarter.FINAL, 28, 17);
+        vm.stopPrank();
+
+        // Check the unclaimed info - should have no distribution
+        (, uint256 distPool, bool ready) = testPool.getUnclaimedInfo();
+
+        // If all quarters had winners, there's no rolled amount, so no distribution
+        assertFalse(ready, "Distribution should not be ready when all quarters have winners");
+        assertEq(distPool, 0, "Distribution pool should be 0");
+
+        // Alice trying to claim should revert with FinalDistributionNotReady
+        vm.prank(alice);
+        vm.expectRevert(SquaresPool.FinalDistributionNotReady.selector);
+        testPool.claimFinalDistribution();
+    }
+
+    // ============ emergencyRecoverETH Tests ============
+
+    function test_EmergencyRecoverETH_Success() public {
+        // Setup: Run full game to FINAL_SCORED state
+        uint8[] memory positions = new uint8[](10);
+        for (uint8 i = 0; i < 10; i++) {
+            positions[i] = i;
+        }
+        vm.prank(alice);
+        pool.buySquares{value: 1 ether}(positions, "");
+
+        // Trigger VRF
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(pool.vrfRequestId(), 12345);
+
+        // Submit all quarters
+        vm.startPrank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q1, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.Q2, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.Q3, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.FINAL, 0, 0);
+        vm.stopPrank();
+
+        // Verify FINAL_SCORED state
+        (, ISquaresPool.PoolState state, , , , , ,) = pool.getPoolInfo();
+        assertEq(uint8(state), uint8(ISquaresPool.PoolState.FINAL_SCORED));
+
+        // Send some extra ETH to the pool (simulating dust or stuck funds)
+        vm.deal(address(pool), 0.1 ether);
+
+        // Admin recovers the ETH
+        address adminAddr = factory.admin();
+        uint256 adminBalanceBefore = adminAddr.balance;
+
+        vm.prank(adminAddr);
+        pool.emergencyRecoverETH(0.1 ether);
+
+        assertEq(adminAddr.balance - adminBalanceBefore, 0.1 ether, "Admin should receive ETH");
+        assertEq(address(pool).balance, 0, "Pool should have no ETH left");
+    }
+
+    function test_EmergencyRecoverETH_RecoverAll() public {
+        // Setup: Complete game
+        uint8[] memory positions = new uint8[](10);
+        for (uint8 i = 0; i < 10; i++) {
+            positions[i] = i;
+        }
+        vm.prank(alice);
+        pool.buySquares{value: 1 ether}(positions, "");
+
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(pool.vrfRequestId(), 12345);
+
+        vm.startPrank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q1, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.Q2, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.Q3, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.FINAL, 0, 0);
+        vm.stopPrank();
+
+        // Send some stuck ETH
+        vm.deal(address(pool), 0.5 ether);
+
+        // Recover all using type(uint256).max
+        address adminAddr = factory.admin();
+        uint256 adminBalanceBefore = adminAddr.balance;
+
+        vm.prank(adminAddr);
+        pool.emergencyRecoverETH(type(uint256).max);
+
+        assertEq(adminAddr.balance - adminBalanceBefore, 0.5 ether, "Admin should receive all ETH");
+    }
+
+    function test_EmergencyRecoverETH_RevertIfNotAdmin() public {
+        // Complete game first
+        uint8[] memory positions = new uint8[](10);
+        for (uint8 i = 0; i < 10; i++) {
+            positions[i] = i;
+        }
+        vm.prank(alice);
+        pool.buySquares{value: 1 ether}(positions, "");
+
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(pool.vrfRequestId(), 12345);
+
+        vm.startPrank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q1, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.Q2, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.Q3, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.FINAL, 0, 0);
+        vm.stopPrank();
+
+        vm.deal(address(pool), 0.1 ether);
+
+        // Non-admin tries to recover
+        vm.prank(alice);
+        vm.expectRevert("Only admin");
+        pool.emergencyRecoverETH(0.1 ether);
+    }
+
+    function test_EmergencyRecoverETH_RevertIfGameNotFinished() public {
+        // Buy squares but don't complete game
+        uint8[] memory positions = new uint8[](10);
+        for (uint8 i = 0; i < 10; i++) {
+            positions[i] = i;
+        }
+        vm.prank(alice);
+        pool.buySquares{value: 1 ether}(positions, "");
+
+        vm.deal(address(pool), 0.1 ether);
+
+        // Admin tries to recover before game is finished
+        address adminAddr = factory.admin();
+        vm.prank(adminAddr);
+        vm.expectRevert("Game not finished");
+        pool.emergencyRecoverETH(0.1 ether);
+    }
+
+    function test_EmergencyRecoverETH_RevertIfInsufficientBalance() public {
+        // Complete game
+        uint8[] memory positions = new uint8[](10);
+        for (uint8 i = 0; i < 10; i++) {
+            positions[i] = i;
+        }
+        vm.prank(alice);
+        pool.buySquares{value: 1 ether}(positions, "");
+
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(pool.vrfRequestId(), 12345);
+
+        vm.startPrank(operator);
+        pool.submitScore(ISquaresPool.Quarter.Q1, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.Q2, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.Q3, 0, 0);
+        pool.submitScore(ISquaresPool.Quarter.FINAL, 0, 0);
+        vm.stopPrank();
+
+        // Only 0.1 ETH in pool
+        vm.deal(address(pool), 0.1 ether);
+
+        // Try to recover more than available
+        address adminAddr = factory.admin();
+        vm.prank(adminAddr);
+        vm.expectRevert("Insufficient balance");
+        pool.emergencyRecoverETH(1 ether);
+    }
 }
 
 /// @title SquaresPoolAaveTest
@@ -1912,7 +2466,8 @@ contract SquaresPoolAaveTest is Test {
             address(aavePool),
             address(wethGateway),
             address(aWETH),
-            address(aUSDC)
+            address(aUSDC),
+            address(paymentToken) // underlying USDC token
         );
 
         // Fund accounts
@@ -2983,7 +3538,8 @@ contract SquaresFactoryWithdrawAllYieldTest is Test {
             address(aavePool),
             address(wethGateway),
             address(aWETH),
-            address(aUSDC)
+            address(aUSDC),
+            address(paymentToken) // underlying USDC token
         );
 
         // Fund accounts
@@ -3379,5 +3935,259 @@ contract SquaresFactoryWithdrawAllYieldTest is Test {
 
         // Should be less than block gas limit (this is a sanity check)
         assertTrue(gasUsed < 30_000_000, "Should not exceed block gas limit");
+    }
+
+    // ============ DoS Vulnerability Tests ============
+
+    function test_MaliciousContract_CannotBlockScoreSubmission() public {
+        // Deploy malicious contract that always reverts on ETH receive
+        MaliciousReceiver malicious = new MaliciousReceiver();
+        vm.deal(address(malicious), 100 ether);
+
+        // Create a new pool for this test
+        ISquaresPool.PoolParams memory params = ISquaresPool.PoolParams({
+            name: "DoS Test Pool",
+            squarePrice: SQUARE_PRICE,
+            paymentToken: address(0),
+            maxSquaresPerUser: 0, // No limit
+            payoutPercentages: [uint8(25), uint8(25), uint8(25), uint8(25)],
+            teamAName: "Team A",
+            teamBName: "Team B",
+            purchaseDeadline: block.timestamp + 7 days,
+            vrfTriggerTime: block.timestamp + 8 days,
+            passwordHash: bytes32(0)
+        });
+
+        vm.prank(operator);
+        address poolAddr = factory.createPool{value: TOTAL_REQUIRED}(params);
+        SquaresPool dosPool = SquaresPool(payable(poolAddr));
+
+        // Malicious contract buys squares that will win
+        // We need to determine which squares will win based on the VRF numbers
+        // For simplicity, buy all squares so the malicious contract is guaranteed to win
+        uint8[] memory allPositions = new uint8[](100);
+        for (uint8 i = 0; i < 100; i++) {
+            allPositions[i] = i;
+        }
+        vm.prank(address(malicious));
+        dosPool.buySquares{value: 100 * SQUARE_PRICE}(allPositions, "");
+
+        // Close pool and assign VRF numbers
+        vm.warp(block.timestamp + 8 days);
+        vm.prank(factory.admin());
+        factory.triggerVRFForAllPools();
+
+        // Fulfill VRF
+        uint256 requestId = dosPool.vrfRequestId();
+        vrfCoordinator.fulfillRandomWord(requestId, 12345678901234567890);
+
+        // Verify state is NUMBERS_ASSIGNED
+        (, ISquaresPool.PoolState state,,,,,, ) = dosPool.getPoolInfo();
+        assertEq(uint8(state), uint8(ISquaresPool.PoolState.NUMBERS_ASSIGNED));
+
+        // Get pool balance before score submission
+        uint256 poolBalanceBefore = address(dosPool).balance;
+
+        // Submit Q1 score - this should NOT revert even though malicious contract rejects ETH
+        vm.prank(factory.admin());
+        factory.submitScoreToAllPools(0, 14, 7); // Q1 score
+
+        // Verify state advanced to Q1_SCORED (game progressed!)
+        (, state,,,,,, ) = dosPool.getPoolInfo();
+        assertEq(uint8(state), uint8(ISquaresPool.PoolState.Q1_SCORED), "Game should advance despite malicious receiver");
+
+        // Verify payout was NOT marked as claimed (since transfer failed)
+        (address winner,) = dosPool.getWinner(ISquaresPool.Quarter.Q1);
+        assertEq(winner, address(malicious), "Malicious contract should be the winner");
+        assertFalse(dosPool.hasClaimed(address(malicious), ISquaresPool.Quarter.Q1), "Should not be marked as claimed");
+
+        // Continue the game - submit all remaining quarters
+        vm.prank(factory.admin());
+        factory.submitScoreToAllPools(1, 21, 14); // Q2
+
+        vm.prank(factory.admin());
+        factory.submitScoreToAllPools(2, 28, 21); // Q3
+
+        vm.prank(factory.admin());
+        factory.submitScoreToAllPools(3, 35, 28); // Final
+
+        // Verify game completed
+        (, state,,,,,, ) = dosPool.getPoolInfo();
+        assertEq(uint8(state), uint8(ISquaresPool.PoolState.FINAL_SCORED), "Game should complete");
+    }
+
+    function test_MaliciousContract_CannotBlockClaimPayout() public {
+        // Deploy malicious contract
+        MaliciousReceiver malicious = new MaliciousReceiver();
+        vm.deal(address(malicious), 100 ether);
+
+        // Create a new pool
+        ISquaresPool.PoolParams memory params = ISquaresPool.PoolParams({
+            name: "Claim DoS Test",
+            squarePrice: SQUARE_PRICE,
+            paymentToken: address(0),
+            maxSquaresPerUser: 0,
+            payoutPercentages: [uint8(25), uint8(25), uint8(25), uint8(25)],
+            teamAName: "Team A",
+            teamBName: "Team B",
+            purchaseDeadline: block.timestamp + 7 days,
+            vrfTriggerTime: block.timestamp + 8 days,
+            passwordHash: bytes32(0)
+        });
+
+        vm.prank(operator);
+        address poolAddr = factory.createPool{value: TOTAL_REQUIRED}(params);
+        SquaresPool claimPool = SquaresPool(payable(poolAddr));
+
+        // Malicious contract buys all squares
+        uint8[] memory allPositions = new uint8[](100);
+        for (uint8 i = 0; i < 100; i++) {
+            allPositions[i] = i;
+        }
+        vm.prank(address(malicious));
+        claimPool.buySquares{value: 100 * SQUARE_PRICE}(allPositions, "");
+
+        // Close pool and assign VRF numbers
+        vm.warp(block.timestamp + 8 days);
+        vm.prank(factory.admin());
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(claimPool.vrfRequestId(), 12345678901234567890);
+
+        // Submit Q1 score (payout fails silently in _settleQuarter)
+        vm.prank(factory.admin());
+        factory.submitScoreToAllPools(0, 14, 7);
+
+        // Verify payout not claimed yet
+        assertFalse(claimPool.hasClaimed(address(malicious), ISquaresPool.Quarter.Q1));
+
+        // Malicious contract tries to claim payout - should NOT revert, just fail silently
+        vm.prank(address(malicious));
+        claimPool.claimPayout(ISquaresPool.Quarter.Q1);
+
+        // Still not claimed (transfer failed)
+        assertFalse(claimPool.hasClaimed(address(malicious), ISquaresPool.Quarter.Q1), "Should still not be claimed");
+
+        // Malicious contract can try again (won't revert, just fails)
+        vm.prank(address(malicious));
+        claimPool.claimPayout(ISquaresPool.Quarter.Q1);
+
+        // Still not claimed
+        assertFalse(claimPool.hasClaimed(address(malicious), ISquaresPool.Quarter.Q1));
+    }
+
+    function test_NormalUser_CanStillClaimAfterMaliciousFailure() public {
+        // Deploy malicious contract
+        MaliciousReceiver malicious = new MaliciousReceiver();
+        vm.deal(address(malicious), 100 ether);
+
+        // Create a new pool
+        ISquaresPool.PoolParams memory params = ISquaresPool.PoolParams({
+            name: "Mixed Users Test",
+            squarePrice: SQUARE_PRICE,
+            paymentToken: address(0),
+            maxSquaresPerUser: 0,
+            payoutPercentages: [uint8(25), uint8(25), uint8(25), uint8(25)],
+            teamAName: "Team A",
+            teamBName: "Team B",
+            purchaseDeadline: block.timestamp + 7 days,
+            vrfTriggerTime: block.timestamp + 8 days,
+            passwordHash: bytes32(0)
+        });
+
+        vm.prank(operator);
+        address poolAddr = factory.createPool{value: TOTAL_REQUIRED}(params);
+        SquaresPool mixedPool = SquaresPool(payable(poolAddr));
+
+        // Malicious contract buys some squares
+        uint8[] memory maliciousPositions = new uint8[](50);
+        for (uint8 i = 0; i < 50; i++) {
+            maliciousPositions[i] = i;
+        }
+        vm.prank(address(malicious));
+        mixedPool.buySquares{value: 50 * SQUARE_PRICE}(maliciousPositions, "");
+
+        // Alice (EOA) buys the rest
+        uint8[] memory alicePositions = new uint8[](50);
+        for (uint8 i = 0; i < 50; i++) {
+            alicePositions[i] = i + 50;
+        }
+        vm.prank(alice);
+        mixedPool.buySquares{value: 50 * SQUARE_PRICE}(alicePositions, "");
+
+        // Close pool and assign VRF numbers
+        vm.warp(block.timestamp + 8 days);
+        vm.prank(factory.admin());
+        factory.triggerVRFForAllPools();
+        vrfCoordinator.fulfillRandomWord(mixedPool.vrfRequestId(), 12345678901234567890);
+
+        // Submit all scores
+        vm.startPrank(factory.admin());
+        factory.submitScoreToAllPools(0, 14, 7);
+        factory.submitScoreToAllPools(1, 21, 14);
+        factory.submitScoreToAllPools(2, 28, 21);
+        factory.submitScoreToAllPools(3, 35, 28);
+        vm.stopPrank();
+
+        // Game completed successfully despite malicious contract
+        (, ISquaresPool.PoolState state,,,,,, ) = mixedPool.getPoolInfo();
+        assertEq(uint8(state), uint8(ISquaresPool.PoolState.FINAL_SCORED));
+
+        // Verify: For each quarter, check the outcome
+        // - If Alice won: should be auto-paid (hasClaimed = true)
+        // - If malicious won: should NOT be auto-paid (hasClaimed = false), but game progressed
+        uint256 aliceWins = 0;
+        uint256 maliciousWins = 0;
+
+        for (uint8 q = 0; q < 4; q++) {
+            ISquaresPool.Quarter quarter = ISquaresPool.Quarter(q);
+            (address winner,) = mixedPool.getWinner(quarter);
+
+            if (winner == alice) {
+                // Alice (EOA) should have been auto-paid successfully
+                assertTrue(mixedPool.hasClaimed(alice, quarter), "Alice should be auto-paid");
+                aliceWins++;
+            } else if (winner == address(malicious)) {
+                // Malicious contract should NOT have been paid (transfer failed)
+                assertFalse(mixedPool.hasClaimed(address(malicious), quarter), "Malicious should not be claimed");
+                maliciousWins++;
+            }
+        }
+
+        // Log what happened for transparency
+        console.log("Alice wins:", aliceWins);
+        console.log("Malicious wins:", maliciousWins);
+
+        // The important assertion: game completed regardless of malicious contract
+        assertTrue(uint8(state) == uint8(ISquaresPool.PoolState.FINAL_SCORED), "Game should complete");
+    }
+}
+
+/// @notice Fixable receiver that can toggle ETH acceptance
+contract FixableReceiver {
+    bool public acceptETH = true;
+
+    function setAcceptETH(bool _accept) external {
+        acceptETH = _accept;
+    }
+
+    receive() external payable {
+        if (!acceptETH) {
+            revert("Not accepting ETH");
+        }
+    }
+
+    function buySquares(SquaresPool pool, uint8[] calldata positions) external payable {
+        pool.buySquares{value: msg.value}(positions, "");
+    }
+}
+
+/// @notice Malicious contract that always reverts when receiving ETH
+contract MaliciousReceiver {
+    receive() external payable {
+        revert("I reject your ETH!");
+    }
+
+    function buySquares(SquaresPool pool, uint8[] calldata positions) external payable {
+        pool.buySquares{value: msg.value}(positions, "");
     }
 }
