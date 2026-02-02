@@ -1433,6 +1433,7 @@ export default function PoolPage() {
           onClose={() => {
             setShowPurchaseSuccess(false);
             resetPurchase();
+            window.location.reload();
           }}
         />
       )}
