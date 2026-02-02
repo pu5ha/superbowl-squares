@@ -446,7 +446,7 @@ contract SquaresPool is ISquaresPool, VRFConsumerBaseV2Plus {
                             finalDistributionClaimed[owner] = true;
                             emit FinalDistributionClaimed(owner, ownerShare, ownerSquares);
                         }
-                        // If transfer fails, user can still claim later via claimFinalDistribution
+                        // If transfer fails for contract wallets, funds remain in pool
                     }
                 }
             }
