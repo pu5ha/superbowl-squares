@@ -172,13 +172,6 @@ export default function HomePage() {
 
       {/* What is Super Bowl Squares */}
       <section className="py-20 relative overflow-hidden">
-        {/* Floating celebration GIF */}
-        <img
-          src="https://media1.tenor.com/m/O2XvgGvNQs4AAAAC/pittsburgh-steelers-antonio-brown.gif"
-          alt=""
-          className="absolute right-[5%] xl:right-[10%] top-20 w-40 h-40 rounded-xl opacity-60 animate-bounce hidden lg:block"
-          style={{ animationDuration: '2.7s' }}
-        />
         <div className="container mx-auto px-6">
           <div className="max-w-4xl mx-auto">
             <div className="text-center mb-12">
@@ -246,13 +239,6 @@ export default function HomePage() {
           className="absolute left-[5%] xl:left-[10%] top-1/2 -translate-y-1/2 w-40 h-40 rounded-xl opacity-50 animate-bounce hidden xl:block"
           style={{ animationDuration: '2.4s' }}
         />
-        {/* Celebration GIF on right */}
-        <img
-          src="https://media1.tenor.com/m/l20af90uR20AAAAC/royalsjun-kansas-city-chiefs.gif"
-          alt=""
-          className="absolute right-[5%] xl:right-[10%] top-1/3 w-44 h-44 rounded-xl opacity-50 animate-bounce hidden xl:block"
-          style={{ animationDuration: '3s', animationDelay: '0.5s' }}
-        />
         <div className="container mx-auto px-6">
           <div className="text-center mb-16">
             <h2 className="text-3xl md:text-4xl font-bold text-[var(--chrome)] mb-4" style={{ fontFamily: 'var(--font-display)' }}>
@@ -286,17 +272,36 @@ export default function HomePage() {
         </div>
       </section>
 
+      {/* Bad Bunny Halftime Show Banner */}
+      <section className="py-16 relative overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-r from-[#ff6b6b]/10 via-transparent to-[#ffd93d]/10" />
+        <div className="container mx-auto px-6 relative">
+          <div className="flex flex-wrap justify-center items-center gap-6 md:gap-10">
+            <img
+              src="https://media1.tenor.com/m/LOOWHHAMd6UAAAAC/bad-bunny-benito.gif"
+              alt="Bad Bunny"
+              className="w-32 h-32 md:w-40 md:h-40 rounded-xl"
+            />
+            <div className="text-center">
+              <p className="text-2xl md:text-4xl font-bold mb-2" style={{ fontFamily: 'var(--font-display)' }}>
+                <span className="text-[var(--chrome)]">HALFTIME SHOW:</span>{' '}
+                <span className="text-[var(--championship-gold)]">BAD BUNNY</span>
+              </p>
+              <p className="text-[var(--smoke)] text-lg">The world will dance 🐰🔥</p>
+            </div>
+            <img
+              src="https://media1.tenor.com/m/vpGYtFh8N9oAAAAC/bad-bunny.gif"
+              alt="Bad Bunny"
+              className="w-32 h-32 md:w-40 md:h-40 rounded-xl"
+            />
+          </div>
+        </div>
+      </section>
+
       {/* How It Works */}
       <section className="py-24 relative overflow-hidden">
         {/* Background accent */}
         <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[var(--turf-green)]/5 to-transparent" />
-
-        {/* Fun dancing GIF */}
-        <img
-          src="https://media1.tenor.com/m/CRKBORMbZNwAAAAC/superbowl.gif"
-          alt=""
-          className="absolute left-[5%] xl:left-[10%] bottom-20 w-40 h-40 rounded-xl opacity-50 hidden lg:block"
-        />
 
         <div className="container mx-auto px-6 relative">
           <div className="text-center mb-16">
