@@ -765,11 +765,6 @@ export default function PoolPage() {
                                 </p>
                               )
                             )}
-                            {!isNativePayment && needsApproval(totalCost) && selectedSquares.length > 0 && (
-                              <p className="text-xs text-blue-400 mt-1">
-                                Requires {paymentToken.symbol} approval
-                              </p>
-                            )}
                           </div>
                         </div>
                       <button
