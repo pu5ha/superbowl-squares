@@ -57,7 +57,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        <title>Super Bowl Squares | Decentralized Betting Pools</title>
+        <title>Super Bowl Squares</title>
         <meta name="description" content="Create or join decentralized Super Bowl Squares betting pools. Powered by blockchain for transparent, trustless, and automatic payouts." />
         <link rel="icon" href="/logos/super-bowl-lx.svg" type="image/svg+xml" />
         {/* Suppress wallet extension errors */}
